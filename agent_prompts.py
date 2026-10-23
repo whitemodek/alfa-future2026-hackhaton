@@ -19,6 +19,14 @@ During finalization stop exploration, train the selected pipeline if needed and 
 its predictions with final=true (permits one equal-score refit of the same validation).
 Never overwrite the registered snapshot. finish publishes the best validated
 artifact as submission.csv. A plain text completion does NOT count as a valid submission.
+If the task names another prediction file, pass it as output_path to configure_submission.
+Always pass direction with a score (rmse/mae/logloss: minimize; f1/accuracy/auc/r2: maximize).
+If the metric needs probabilities (ROC-AUC, logloss) submit probabilities, not hard labels.
+For Macro F1 on imbalanced classes try class weights and per-class threshold tuning on OOF.
+For RMSE check target skew/outliers (log-target, clipping) before tuning models.
+Installed: numpy, pandas, polars, scikit-learn, lightgbm, xgboost, catboost, optuna,
+category-encoders, imbalanced-learn, statsmodels, torch; no network, 8 CPU, 32 GB RAM.
+Print short summaries (scores, shapes), not whole dataframes: only ~4 KB of output is shown.
 '''
 
 
@@ -35,7 +43,7 @@ TOOLS = [
          {'code': STR, 'timeout_seconds': {'type': 'number'}}, ['code']),
     tool('configure_submission', 'Set CSV contract before registering the first candidate.',
          {'columns': STRINGS, 'expected_rows': {'type': 'integer'}, 'id_columns': STRINGS,
-          'sample_path': STR, 'numeric_columns': STRINGS,
+                    'sample_path': STR, 'numeric_columns': STRINGS, 'output_path': STR,
           'allowed_values': {'type': 'object', 'additionalProperties': STRINGS}}),
     tool('register_candidate', 'Validate and snapshot candidate; score is optional.',
          {'candidate_path': STR, 'score': {'type': 'number'}, 'metric': STR,

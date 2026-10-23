@@ -5,8 +5,11 @@ import math
 import os
 from pathlib import Path
 import re
+import signal
 import tempfile
+import threading
 import time
+from types import SimpleNamespace
 import uuid
 
 from agent_config import Config
@@ -17,6 +20,66 @@ from process_runner import run_python
 
 class BudgetExceeded(RuntimeError):
     pass
+
+
+# Метрики с известным направлением: защищает от RMSE с direction=maximize.
+LOWER_IS_BETTER = ('rmse', 'mse', 'mae', 'mape', 'rmsle', 'msle', 'logloss', 'log_loss',
+                   'cross_entropy', 'crossentropy', 'error', 'loss', 'wape', 'medae', 'deviance')
+HIGHER_IS_BETTER = ('f1', 'accuracy', 'auc', 'r2', 'precision', 'recall', 'kappa', 'mcc',
+                    'ndcg', 'gini', 'iou', 'dice', 'balanced_acc', 'average_precision', 'map@')
+
+
+def metric_direction(metric):
+    name = re.sub(r'[\s-]+', '_', str(metric or '').lower())
+    if any(key in name for key in LOWER_IS_BETTER):
+        return 'minimize'
+    if any(key in name for key in HIGHER_IS_BETTER):
+        return 'maximize'
+    return None
+
+
+def shrink(text, limit):
+    if not isinstance(text, str) or len(text) <= limit:
+        return text
+    head = limit * 3 // 10
+    tail = limit - head
+    return f"{text[:head]}\n...[{len(text) - limit} chars skipped]...\n{text[-tail:]}"
+
+
+def output_names_from_task(task, task_dir):
+    names = []
+    for match in re.findall(r'[\w\-./]+\.csv', task):
+        name = match.lstrip('./')
+        lowered = Path(name).name.lower()
+        if (name and not (task_dir / name).exists() and '..' not in Path(name).parts
+                and not any(word in lowered for word in ('train', 'test', 'sample', 'dictionary'))
+                and name not in names):
+            names.append(name)
+    return names
+
+
+class TextToolCall:
+
+    def __init__(self, identifier, name, arguments):
+        self.id = identifier
+        self.function = SimpleNamespace(name=name, arguments=(
+            arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)))
+
+    def model_dump(self, **kwargs):
+        return {'id': self.id, 'type': 'function',
+                'function': {'name': self.function.name, 'arguments': self.function.arguments}}
+
+
+def text_tool_calls(content, step):
+    calls = []
+    for number, block in enumerate(re.findall(r'<tool_call>\s*(\{.*?\})\s*</tool_call>', content or '', re.S)):
+        try:
+            data = json.loads(block)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and isinstance(data.get('name'), str):
+            calls.append(TextToolCall(f'text_{step}_{number}', data['name'], data.get('arguments', {})))
+    return calls
 
 
 def redact(text):
@@ -55,12 +118,19 @@ class Agent:
         self.state_dir = Path(tempfile.mkdtemp(prefix='.agent-', dir=self.task_dir))
         self.store = ArtifactStore(self.task_dir, self.state_dir, SubmissionSchema())
         self.configured = False
+        # submission.csv всегда + имя из условия, если оно там есть (дублирование безвредно).
+        self.outputs = ['submission.csv'] + [n for n in output_names_from_task(self.task, self.task_dir)
+                                             if n != 'submission.csv']
         self.finished = False
         self.attempts = self.tokens = self.step = 0
         self.messages = [ {'role': 'system', 'content': SYSTEM_PROMPT},
                          {'role': 'user', 'content': 'TASK:\n' + self.task + '\nFILES:\n' +
                           json.dumps(inventory(self.task_dir), ensure_ascii=False)} ]
         self.journal('start', config=asdict(self.config))
+
+    def publish(self):
+        paths = [self.store.publish(name) for name in self.outputs]
+        return paths[0]
 
     def remaining(self):
         return max(0.0, self.config.total_seconds - (self.clock() - self.started))
@@ -84,12 +154,13 @@ class Agent:
                                    self.tokens >= self.config.max_tokens * 0.8) else 'explore',
             'best': self.store.best})}]
         payload = json.loads(redact(json.dumps(payload, ensure_ascii=False)))
-        # UTF-8 bytes overestimate typical token counts; include schema and framing overhead.
-        input_bound = len(json.dumps([payload, TOOLS]).encode('utf-8')) + 512
+        input_bound = len(json.dumps([payload, TOOLS], ensure_ascii=False).encode('utf-8')) + 512
         if input_bound > self.config.context_bytes + 20000:
             raise BudgetExceeded('context limit reached')
         for retry in range(self.config.retries + 1):
-            reservation = input_bound + self.config.response_tokens
+            # ~3 байта UTF-8 на токен — всё ещё с запасом (реально 3.5-4); после ответа
+            # резерв заменяется точным usage.total_tokens.
+            reservation = input_bound // 3 + self.config.response_tokens
             if self.attempts >= self.config.max_api_attempts or self.tokens + reservation > self.config.max_tokens:
                 raise BudgetExceeded('API budget reached')
             if self.remaining() <= 2:
@@ -122,6 +193,10 @@ class Agent:
             raise BudgetExceeded('time limit reached')
         if self.remaining() > self.config.reserve_seconds:
             limit = min(limit, self.remaining() - self.config.reserve_seconds)
+        else:
+            # Финализация: оставить время на вызов LLM, register_candidate и publish.
+            margin = min(self.config.finalize_margin_seconds, self.remaining() / 2)
+            limit = min(limit, self.remaining() - margin)
         value = self.config.call_seconds if requested is None else requested
         if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or value <= 0:
             raise ValueError('timeout_seconds must be positive and finite')
@@ -138,6 +213,15 @@ class Agent:
                 raise ValueError('schema is locked after first candidate')
             if not args.get('sample_path') and (not args.get('columns') or args.get('expected_rows') is None):
                 raise ValueError('provide sample_path or columns and expected_rows')
+            output = args.pop('output_path', None)
+            if output is not None:
+                target = (self.task_dir / str(output)).resolve()
+                if (not target.is_relative_to(self.task_dir) or target.suffix.lower() != '.csv'
+                        or (target.exists() and target.name not in self.outputs)):
+                    raise ValueError('output_path must be a new .csv inside the task directory (never an input file)')
+                name = str(target.relative_to(self.task_dir))
+                if name not in self.outputs:
+                    self.outputs.append(name)
             schema = SubmissionSchema(**args)
             self.store = ArtifactStore(self.task_dir, self.state_dir, schema)
             self.configured = True
@@ -146,11 +230,21 @@ class Agent:
         if name == 'register_candidate':
             if not self.configured:
                 raise ValueError('configure_submission first')
+            if args.get('score') is not None:
+                known = metric_direction(args.get('metric'))
+                if 'direction' not in args:
+                    if known is None:
+                        raise ValueError('direction (maximize/minimize) is required for this metric')
+                    args = {**args, 'direction': known}
+                elif known and args['direction'] != known:
+                    raise ValueError(f"metric {args.get('metric')!r} must be {known}d, got {args['direction']}")
             result = self.store.consider(**args)
             self.journal('candidate', result=result)
+            if result.get('accepted'):
+                self.publish()  # файл на диске сразу: kill на 180-й минуте его не отнимет
             return result
         if name == 'finish':
-            path = self.store.publish()
+            path = self.publish()
             self.finished = True
             return {'submission': str(path)}
         timeout = self._timeout(args.get('timeout_seconds'))
@@ -198,10 +292,16 @@ class Agent:
 
     def run(self):
         reason = 'step_limit'
+        previous_handler = None
+        if threading.current_thread() is threading.main_thread():
+            def on_sigterm(signum, frame):
+                raise KeyboardInterrupt('SIGTERM')
+            previous_handler = signal.signal(signal.SIGTERM, on_sigterm)
         try:
             for self.step in range(1, self.config.max_steps + 1):
                 message = self._request()
-                calls = getattr(message, 'tool_calls', None) or []
+                calls = getattr(message, 'tool_calls', None) or text_tool_calls(
+                    getattr(message, 'content', None), self.step)
                 if len(calls) > 8:
                     raise ValueError('too many tool calls')
                 self.messages.append({'role': 'assistant', 'content': redact(message.content or ''),
@@ -221,6 +321,9 @@ class Agent:
                     except Exception as exc:
                         result = {'error': redact(str(exc))[:2000], 'type': type(exc).__name__}
                         self.journal('tool_error', tool=call.function.name, **result)
+                    if isinstance(result, dict):  # полный вывод уже в events.jsonl
+                        result = {key: shrink(value, self.config.tool_output_bytes)
+                                  if key in ('stdout', 'stderr') else value for key, value in result.items()}
                     self.messages.append({'role': 'tool', 'tool_call_id': call.id,
                                           'content': redact(json.dumps(result, ensure_ascii=False, default=str))})
                     if self.finished:
@@ -231,8 +334,11 @@ class Agent:
         except (Exception, KeyboardInterrupt) as exc:
             reason = type(exc).__name__
             self.journal('stopped', reason=reason)
+        finally:
+            if previous_handler is not None:
+                signal.signal(signal.SIGTERM, previous_handler)
         if self.store.best:
-            path = self.store.publish()
+            path = self.publish()
             self.journal('published', reason=reason, submission=str(path), best=self.store.best)
             return {'success': True, 'reason': reason, 'submission': str(path), 'state_dir': str(self.state_dir)}
         self.journal('failed', reason=reason)

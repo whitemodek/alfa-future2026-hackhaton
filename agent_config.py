@@ -12,16 +12,18 @@ class Config:
     api_seconds: float = 90
     max_steps: int = 60
     max_api_attempts: int = 80
-    max_tokens: int = 200000
+    max_tokens: int = 500000
     response_tokens: int = 4096
     context_bytes: int = 100000
     retries: int = 2
     memory_mb: int = 28000
     threads: int = 8
+    finalize_margin_seconds: float = 120
+    tool_output_bytes: int = 4000
 
     def __post_init__(self):
         integer_fields = ('max_steps', 'max_api_attempts', 'max_tokens', 'response_tokens',
-                          'context_bytes', 'retries', 'memory_mb', 'threads')
+                          'context_bytes', 'retries', 'memory_mb', 'threads', 'tool_output_bytes')
         if any(type(getattr(self, key)) is not int for key in integer_fields):
             raise ValueError('counts and resource sizes must be integers')
         for key, value in vars(self).items():

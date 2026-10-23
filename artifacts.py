@@ -305,13 +305,16 @@ class ArtifactStore:
         improved = score > self.best["score"] if direction == "maximize" else score < self.best["score"]
         return improved, "improved_score" if improved else "score_not_improved"
 
-    def publish(self):
+    def publish(self, name="submission.csv"):
         if self._snapshot is None:
             raise ArtifactError("No validated submission is available")
         result = _validate_csv(self._snapshot, self.task_dir, self.schema, self._sample_snapshot, self.max_bytes)
         if result.sha256 != self.best["sha256"]:
             raise ArtifactError("Best snapshot content changed")
-        destination = self.task_dir / "submission.csv"
+        destination = (self.task_dir / name).resolve()
+        if not destination.is_relative_to(self.task_dir) or destination.suffix.lower() != ".csv":
+            raise ArtifactError("Output must be a .csv file inside the task directory")
+        destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.is_symlink():
             raise ArtifactError("Refusing to publish over a symlink")
         descriptor, temporary = tempfile.mkstemp(prefix=".submission-", suffix=".tmp", dir=self.task_dir)
