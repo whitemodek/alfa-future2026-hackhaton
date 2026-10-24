@@ -12,9 +12,15 @@ candidate early. register_candidate snapshots and validates it. Only use compara
 validation scores with identical metric, direction and validation_id (split identifier).
 Unscored candidates provide a fallback; scored ones improve it. Keep experiments reproducible
 by writing scripts. Save predictions before spending time on more experiments.
-The teammate may supply ml_backend.py; use run_backend to call its JSON contract. Otherwise
-run_python can execute your generated code. Model/feature/validation decisions belong to the
-ML module. Do not invent validation results. Respect time_left and finalization phase.
+The bundled ml_backend.py supports inspect, baseline, experiment, train and finalize actions
+through run_backend. Startup normally registers a cheap baseline and a validated CatBoost
+candidate before your first request. Preserve the existing submission schema. Read startup
+results before training again. Use explicit paths, target, problem_type, metric, direction,
+prediction_type and ID columns when inference is ambiguous. Supported tuning fields include
+iterations, depth, learning_rate, random_seed, auto_class_weights and validation_fraction.
+Use run_backend to compare a few justified configurations, rather than regenerating standard
+training code. run_python is available for other task types, diagnosis and feature engineering.
+Do not invent validation results. Respect time_left and finalization phase.
 During finalization stop exploration, train the selected pipeline if needed and register
 its predictions with final=true (permits one equal-score refit of the same validation).
 Never overwrite the registered snapshot. finish publishes the best validated

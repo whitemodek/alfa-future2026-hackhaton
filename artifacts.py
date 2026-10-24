@@ -311,13 +311,10 @@ class ArtifactStore:
         result = _validate_csv(self._snapshot, self.task_dir, self.schema, self._sample_snapshot, self.max_bytes)
         if result.sha256 != self.best["sha256"]:
             raise ArtifactError("Best snapshot content changed")
-        destination = (self.task_dir / name).resolve()
-        if not destination.is_relative_to(self.task_dir) or destination.suffix.lower() != ".csv":
-            raise ArtifactError("Output must be a .csv file inside the task directory")
+        destination = self._output_destination(name)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.is_symlink():
-            raise ArtifactError("Refusing to publish over a symlink")
-        descriptor, temporary = tempfile.mkstemp(prefix=".submission-", suffix=".tmp", dir=self.task_dir)
+        destination = self._output_destination(name)
+        descriptor, temporary = tempfile.mkstemp(prefix=".submission-", suffix=".tmp", dir=destination.parent)
         try:
             with os.fdopen(descriptor, "wb") as target, self._snapshot.open("rb") as source:
                 _bounded_copy(source, target, self.max_bytes)
@@ -326,7 +323,25 @@ class ArtifactStore:
             result = _validate_csv(temporary, self.task_dir, self.schema, self._sample_snapshot, self.max_bytes)
             if result.sha256 != self.best["sha256"]:
                 raise ArtifactError("Published snapshot content changed")
+            self._output_destination(name)
             os.replace(temporary, destination)
         finally:
             Path(temporary).unlink(missing_ok=True)
         return destination
+
+    def _output_destination(self, name):
+        # Inspect the original path: resolve() would erase link metadata and could
+        # redirect a submission to a dataset file. Junctions are links on Windows.
+        destination = self.task_dir / name
+        if (not destination.is_relative_to(self.task_dir) or ".." in destination.parts
+                or destination.suffix.lower() != ".csv"):
+            raise ArtifactError("Output must be a .csv file inside the task directory")
+        current = self.task_dir
+        for part in destination.relative_to(self.task_dir).parts:
+            current = current / part
+            if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
+                raise ArtifactError("Refusing to publish through a symlink or junction")
+        resolved = destination.resolve()
+        if not resolved.is_relative_to(self.task_dir):
+            raise ArtifactError("Output must be inside the task directory")
+        return resolved

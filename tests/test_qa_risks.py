@@ -156,15 +156,14 @@ class CrashSafetyTests(Base):
 
 
 class FallbackTests(Base):
-    @unittest.skip("BUG-6: резервное решение без LLM отложено — убрать skip, когда добавите baseline_fallback.py")
     def test_bug6_llm_unavailable_still_produces_submission(self):
         """BUG-6: если LLM недоступна с первого запроса, нет никакого сабмита (нужен baseline без LLM)."""
         (self.root / "train.csv").write_text("id,x,y\n1,1,2\n2,2,4\n3,3,6\n", encoding="utf-8")
         (self.root / "test.csv").write_text("id,x\n10,4\n11,5\n", encoding="utf-8")
         (self.root / "sample_submission.csv").write_text("id,y\n10,0\n11,0\n", encoding="utf-8")
         error = RuntimeError("401 auth")
-        result = Agent(self.task, Scripted(error), Config(total_seconds=60, reserve_seconds=5),
-                       sleep=lambda _: None).run()
+        result = Agent(self.task, Scripted(error), Config(total_seconds=60, reserve_seconds=5,
+                       warmup_seconds=0), sleep=lambda _: None).run(bootstrap=True)
         self.assertTrue(result["success"], result)
         self.assertTrue((self.root / "submission.csv").exists())
 

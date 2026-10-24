@@ -20,6 +20,8 @@ class Config:
     threads: int = 8
     finalize_margin_seconds: float = 120
     tool_output_bytes: int = 4000
+    bootstrap_seconds: float = 60
+    warmup_seconds: float = 300
 
     def __post_init__(self):
         integer_fields = ('max_steps', 'max_api_attempts', 'max_tokens', 'response_tokens',
@@ -29,7 +31,7 @@ class Config:
         for key, value in vars(self).items():
             if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
                 raise ValueError(f"{key} must be finite")
-            if value < 0 or (key not in ('reserve_seconds', 'retries') and value == 0):
+            if value < 0 or (key not in ('reserve_seconds', 'retries', 'bootstrap_seconds', 'warmup_seconds') and value == 0):
                 raise ValueError(f"invalid {key}")
         if self.reserve_seconds >= self.total_seconds or self.total_seconds > 10800:
             raise ValueError('reserve must be below total; total must be <= 10800 seconds')

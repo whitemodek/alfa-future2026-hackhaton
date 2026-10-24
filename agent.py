@@ -31,9 +31,14 @@ HIGHER_IS_BETTER = ('f1', 'accuracy', 'auc', 'r2', 'precision', 'recall', 'kappa
 
 def metric_direction(metric):
     name = re.sub(r'[\s-]+', '_', str(metric or '').lower())
-    if any(key in name for key in LOWER_IS_BETTER):
+    if name.startswith('neg_'):
+        underlying = metric_direction(name[4:])
+        return {'minimize': 'maximize', 'maximize': 'minimize'}.get(underlying)
+    if name in LOWER_IS_BETTER or name in ('root_mean_squared_error', 'mean_squared_error',
+                                           'mean_absolute_error', 'mean_absolute_percentage_error'):
         return 'minimize'
-    if any(key in name for key in HIGHER_IS_BETTER):
+    if name in HIGHER_IS_BETTER or name in ('macro_f1', 'f1_macro', 'weighted_f1', 'f1_weighted',
+                                            'roc_auc', 'roc_auc_ovr', 'balanced_accuracy', 'r2_score'):
         return 'maximize'
     return None
 
@@ -118,7 +123,7 @@ class Agent:
         self.state_dir = Path(tempfile.mkdtemp(prefix='.agent-', dir=self.task_dir))
         self.store = ArtifactStore(self.task_dir, self.state_dir, SubmissionSchema())
         self.configured = False
-        # submission.csv всегда + имя из условия, если оно там есть (дублирование безвредно).
+        # The platform always receives submission.csv; explicit task aliases are additional.
         self.outputs = ['submission.csv'] + [n for n in output_names_from_task(self.task, self.task_dir)
                                              if n != 'submission.csv']
         self.finished = False
@@ -129,8 +134,13 @@ class Agent:
         self.journal('start', config=asdict(self.config))
 
     def publish(self):
-        paths = [self.store.publish(name) for name in self.outputs]
-        return paths[0]
+        primary = self.store.publish()
+        for name in self.outputs[1:]:
+            try:
+                self.store.publish(name)
+            except Exception as exc:
+                self.journal('alias_publish_error', name=name, error_type=type(exc).__name__)
+        return primary
 
     def remaining(self):
         return max(0.0, self.config.total_seconds - (self.clock() - self.started))
@@ -158,9 +168,8 @@ class Agent:
         if input_bound > self.config.context_bytes + 20000:
             raise BudgetExceeded('context limit reached')
         for retry in range(self.config.retries + 1):
-            # ~3 байта UTF-8 на токен — всё ещё с запасом (реально 3.5-4); после ответа
-            # резерв заменяется точным usage.total_tokens.
-            reservation = input_bound // 3 + self.config.response_tokens
+            # Reserve a conservative UTF-8 byte bound. Refund with exact reported usage.
+            reservation = input_bound + self.config.response_tokens
             if self.attempts >= self.config.max_api_attempts or self.tokens + reservation > self.config.max_tokens:
                 raise BudgetExceeded('API budget reached')
             if self.remaining() <= 2:
@@ -213,17 +222,26 @@ class Agent:
                 raise ValueError('schema is locked after first candidate')
             if not args.get('sample_path') and (not args.get('columns') or args.get('expected_rows') is None):
                 raise ValueError('provide sample_path or columns and expected_rows')
+            args = dict(args)
             output = args.pop('output_path', None)
+            output_name = None
             if output is not None:
-                target = (self.task_dir / str(output)).resolve()
+                if not isinstance(output, str):
+                    raise ValueError('output_path must be a string')
+                raw_target = self.task_dir / output
+                if any(p.is_symlink() or getattr(p, 'is_junction', lambda: False)()
+                       for p in (raw_target, *raw_target.parents) if p != self.task_dir):
+                    raise ValueError('output_path must not use links')
+                target = raw_target.resolve()
                 if (not target.is_relative_to(self.task_dir) or target.suffix.lower() != '.csv'
-                        or (target.exists() and target.name not in self.outputs)):
+                        or (target.exists() and str(target.relative_to(self.task_dir)) not in self.outputs)):
                     raise ValueError('output_path must be a new .csv inside the task directory (never an input file)')
-                name = str(target.relative_to(self.task_dir))
-                if name not in self.outputs:
-                    self.outputs.append(name)
+                output_name = str(target.relative_to(self.task_dir))
             schema = SubmissionSchema(**args)
-            self.store = ArtifactStore(self.task_dir, self.state_dir, schema)
+            store = ArtifactStore(self.task_dir, self.state_dir, schema)
+            self.store = store
+            if output_name and output_name not in self.outputs:
+                self.outputs.append(output_name)
             self.configured = True
             self.journal('schema', schema=asdict(schema))
             return {'configured': True}
@@ -254,7 +272,7 @@ class Agent:
         if not isinstance(code, str):
             raise ValueError('code must be a string')
         # Save reproducible experiment source, without secrets, separately from bounded output.
-        (self.state_dir / f'experiment-{self.step:03d}.py').write_text(redact(code), encoding='utf-8')
+        (self.state_dir / f'experiment-{self.step:03d}-{uuid.uuid4().hex[:8]}.py').write_text(redact(code), encoding='utf-8')
         result = run_python(code, self.task_dir, timeout, self.config.memory_mb, self.config.threads)
         self.journal('execution', result=result)
         return result
@@ -290,7 +308,42 @@ class Agent:
         self.journal('backend', result=result)
         return result
 
-    def run(self):
+    def _bootstrap(self):
+        module = Path(__file__).resolve().with_name('ml_backend.py')
+        if not module.is_file() or self.config.bootstrap_seconds == 0:
+            return
+        for action, allowance in (('baseline', self.config.bootstrap_seconds),
+                                  ('experiment', self.config.warmup_seconds)):
+            if allowance == 0 or self.remaining() <= self.config.reserve_seconds + 5:
+                continue
+            # Native ML runs use a modest fraction of short smoke-test budgets.
+            timeout = min(allowance, self.remaining() * 0.2,
+                          self.remaining() - self.config.reserve_seconds - 2)
+            if timeout < 2:
+                continue
+            try:
+                result = self._backend({'action': action}, timeout)
+                response = result.get('response', {})
+                if result.get('exit_code') != 0 or response.get('status') != 'ok':
+                    self.journal('bootstrap_error', action=action,
+                                 error_type=response.get('error_type', 'backend_failed'))
+                    if not self.store.best:
+                        break
+                    continue
+                if not self.configured:
+                    self.execute('configure_submission', response['schema'])
+                candidate = {key: response[key] for key in ('candidate_path', 'score', 'metric',
+                             'direction', 'validation_id', 'final') if key in response}
+                self.execute('register_candidate', candidate)
+                self.messages.append({'role': 'user', 'content':
+                    'Native ML startup result (already registered): ' +
+                    redact(json.dumps(response, ensure_ascii=False))})
+            except Exception as exc:
+                self.journal('bootstrap_error', action=action, error_type=type(exc).__name__)
+                if not self.store.best:
+                    break
+
+    def run(self, *, bootstrap=False):
         reason = 'step_limit'
         previous_handler = None
         if threading.current_thread() is threading.main_thread():
@@ -298,6 +351,8 @@ class Agent:
                 raise KeyboardInterrupt('SIGTERM')
             previous_handler = signal.signal(signal.SIGTERM, on_sigterm)
         try:
+            if bootstrap:
+                self._bootstrap()
             for self.step in range(1, self.config.max_steps + 1):
                 message = self._request()
                 calls = getattr(message, 'tool_calls', None) or text_tool_calls(

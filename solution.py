@@ -16,14 +16,15 @@ def main(argv=None):
     task = Path(args[0] if args else 'task.md')  # baseline.py по умолчанию тоже берёт task.md
     try:
         config = Config.from_env()
+        api_key = os.environ.get('OPENAI_API_KEY', '').strip()
+        base_url = os.environ.get('OPENAI_BASE_URL', '').strip()
+        if not api_key or not base_url:
+            print('OPENAI_API_KEY and OPENAI_BASE_URL are required', file=sys.stderr)
+            return 2
         from openai import OpenAI
-        # Как в baseline: base_url берётся из env, если задан. Без ключа агент не падает на старте,
-        # а завершится с понятной причиной после первого запроса к API.
-        client_args = {'api_key': os.environ.get('OPENAI_API_KEY') or 'missing', 'max_retries': 0}
-        if os.environ.get('OPENAI_BASE_URL'):
-            client_args['base_url'] = os.environ['OPENAI_BASE_URL']
+        client_args = {'api_key': api_key, 'base_url': base_url, 'max_retries': 0}
         with OpenAI(**client_args) as client:
-            result = Agent(task, client, config).run()
+            result = Agent(task, client, config).run(bootstrap=True)
         print(json.dumps(result, ensure_ascii=False))
         return 0 if result['success'] else 1
     except Exception as exc:
