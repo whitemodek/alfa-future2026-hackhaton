@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 from agent import Agent, BudgetExceeded, shrink
 from agent_config import Config
 from test_agent import Call, ScriptedProvider, reply
@@ -22,6 +23,28 @@ class AgentFixture(unittest.TestCase):
 
 
 class AgentImprovementTests(AgentFixture):
+    def test_bootstrap_does_not_repeat_large_native_response_in_context(self):
+        candidate = self.root / 'candidate.csv'
+        provider = ScriptedProvider(reply(content='done'))
+        runner = self.runner(provider)
+        candidate.write_text('prediction\n1\n')
+        result = {'exit_code': 0, 'response': {'status': 'ok',
+                  'candidate_path': str(candidate), 'schema': {'columns': ['prediction'], 'expected_rows': 1},
+                  'score': 2, 'metric': 'rmse', 'direction': 'minimize',
+                  'validation_id': 'same-fold', 'notes': 'verbose training metadata ' * 3000,
+                  'validation': {'strategy': 'random', 'rationale': 'Independent rows'}}}
+        with patch.object(runner, '_backend', return_value=result):
+            runner._bootstrap()
+        _, input_bound = runner._request_payload()
+        self.assertLess(input_bound, 20000)
+        self.assertNotIn('verbose training metadata', json.dumps(runner.messages))
+        runner.config = Config(total_seconds=60, reserve_seconds=5, max_tokens=input_bound + 1000)
+        runner._request()
+        self.assertEqual(len(provider.requests), 1)
+        status = json.loads(provider.requests[0]['messages'][-1]['content'])
+        self.assertEqual(len(status['recent_experiments']), 2)
+        self.assertEqual(status['recent_experiments'][-1]['score'], 2)
+
     def test_output_bound_is_utf8_bytes_and_preserves_both_ends(self):
         text = 'Начало ' + 'данные ' * 3000 + ' Итоговая метрика 0.71'
         compact = shrink(text, 4000)

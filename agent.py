@@ -453,8 +453,9 @@ class Agent:
                 result['registration'] = registration
                 self._remember_experiment('run_backend', {'request': {'action': action}}, result)
                 self.messages.append({'role': 'user', 'content':
-                    'Native ML startup result (already evaluated and saved if better): ' +
-                    redact(json.dumps({'response': response, 'registration': registration}, ensure_ascii=False))})
+                    'Native ML startup completed: ' + action +
+                    '. Results, paths, settings and validation rationale are in recent_experiments. '
+                    'The best validated CSV has already been saved.'})
             except Exception as exc:
                 self.journal('bootstrap_error', action=action, error_type=type(exc).__name__)
                 if not self.store.best:
