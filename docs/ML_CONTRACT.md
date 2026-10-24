@@ -36,7 +36,9 @@ ml_backend.py /absolute/request.json /absolute/response.json
 
 Встроенные действия: `inspect` возвращает описание данных, `baseline` строит
 Dummy-модель, `experiment`/`train` проверяют CatBoost против baseline на том же
-holdout и делают полный refit, `finalize` дополнительно помечает результат финальным.
+holdout и пробуют полный refit. При нехватке времени или сбое refit сохраняется
+обученная на части данных модель. `finalize` помечает результат финальным,
+только если полный refit завершён.
 Время и ресурсы верхнего уровня задаёт оркестратор. Рабочая директория
 всегда `task_dir`. Пути в исходном условии нужно сопоставлять с реальными файлами.
 
@@ -44,7 +46,8 @@ holdout и делают полный refit, `finalize` дополнительн�
 `problem_type` (regression/classification), `prediction_type` (label/probability),
 `metric`, `direction`, `positive_class`, `class_order`, `categorical_features`.
 Настройки модели: `iterations`, `depth`, `learning_rate`, `random_seed`,
-`auto_class_weights`. Разбиение: `validation_fraction` и `split` (random/time).
+`auto_class_weights`; `refit: false` отключает полное дообучение.
+Разбиение: `validation_fraction` и `split` (random/time).
 По умолчанию используется воспроизводимый random holdout со стратификацией,
 когда она возможна. Для временной задачи нужно явно выбрать `split=time` и
 предварительно обеспечить правильный порядок строк. Групповой CV не встроен.
@@ -78,13 +81,19 @@ CSV, TSV и Parquet читаются автоматически; шаблон о
 При запуске CLI оркестратор сначала автоматически вызывает baseline и experiment,
 проверяет и регистрирует их результаты до первого обращения к API. Их бюджеты
 ограничены `AGENT_BOOTSTRAP_SECONDS`/`AGENT_WARMUP_SECONDS` и оставшимся временем.
-Последующие ответы `run_backend` передаются LLM, которая вызывает `configure_submission` и
-`register_candidate`. Сам ответ **не публикует** CSV. Для резервного кандидата
+Каждый успешный `run_backend` с кандидатом также автоматически проверяет и
+регистрирует CSV до следующего обращения к LLM. Итог проверки находится в поле
+`registration` ответа инструмента. Для кандидатов из `run_python` нужно вызвать
+`configure_submission` и `register_candidate` самостоятельно. Для резервного кандидата
 можно не передавать score. Для сравнения нужны одинаковые metric, direction и
 validation_id; бэкенд проверяет формат, а достоверность оценки обеспечивает ML.
 Финальный refit использует ту же проверенную оценку выбранной конфигурации:
 передайте `final: true` в `register_candidate`, чтобы один раз заменить кандидат
 при равной оценке. Без этого флага равная оценка не заменяет сохранённый результат.
+
+Встроенный ML-модуль возвращает `fit_scope` (`holdout_train` или `full_train`)
+и `training_rows`, чтобы различать обучение на части данных и полный refit.
+Оценка в обоих случаях получена на holdout до полного дообучения.
 
 После первого принятого кандидата схема фиксируется. `sample_path` задаёт
 точные столбцы и число строк, а `id_columns` дополнительно проверяет порядок ID.

@@ -466,15 +466,17 @@ class _DeadlineCallback:
 
 
 def run(envelope):
+    started = time.monotonic()
     import numpy as np
     from sklearn.dummy import DummyClassifier, DummyRegressor
-    started = time.monotonic()
     request = envelope.get("request", {})
     if not isinstance(request, dict):
         raise MLRequestError("request must be an object.")
     action = request.get("action", "experiment")
     if action not in {"inspect", "baseline", "experiment", "train", "finalize"}:
         raise MLRequestError(f"Unsupported action: {action}")
+    if not isinstance(request.get("refit", True), bool):
+        raise MLRequestError("refit must be true or false.")
     budget = float(envelope.get("time_budget_seconds", 300))
     if not math.isfinite(budget) or budget < 1:
         raise MLRequestError("time_budget_seconds must be finite and at least 1.")
@@ -517,6 +519,7 @@ def run(envelope):
     probability = _aligned_proba(dummy, np.zeros((len(test_x), 1)), len(problem["classes"])) if classification else None
     path, schema = _output(problem, prediction, probability, request)
     chosen, model_path = "dummy", None
+    fit_scope, training_rows = "full_train", len(y)
     baseline_path = str(path)
     remaining = budget - (time.monotonic() - started)
     if action != "baseline" and train_i is not None and remaining >= 3 and (not classification or len(problem["classes"]) > 1):
@@ -542,8 +545,11 @@ def run(envelope):
                     parameters["auto_class_weights"] = weighting
             model = model_class(**parameters)
             fit_started = time.monotonic()
-            # Leave roughly half the remaining budget for full-data refit and output.
-            validation_deadline = fit_started + max(1, (remaining - 2) * 0.42)
+            # Refit on all rows is slower. Reserve output time independently of
+            # validation/refit and preserve the learned holdout model either way.
+            output_margin = min(15, max(2, budget * 0.08))
+            available = budget - (fit_started - started) - output_margin
+            validation_deadline = fit_started + max(1, available * 0.35)
             model.fit(x.iloc[train_i], y.iloc[train_i], eval_set=(x.iloc[valid_i], y.iloc[valid_i]),
                       early_stopping_rounds=60, callbacks=[_DeadlineCallback(validation_deadline)])
             validation_time = time.monotonic() - fit_started
@@ -554,47 +560,63 @@ def run(envelope):
                 (learned_score >= score if problem["direction"] == "maximize" else learned_score <= score))
             if better:
                 count = max(1, int(model.tree_count_))
-                left = budget - (time.monotonic() - started) - 1
+                # This is already an honestly scored model. Its predictions are
+                # useful even when a full-data refit cannot finish in time.
+                prediction = np.asarray(model.predict(test_x)).reshape(-1)
+                probability = _aligned_proba(model, test_x, len(problem["classes"])) if classification else None
+                path, schema = _output(problem, prediction, probability, request)
+                score, chosen = learned_score, "catboost"
+                fit_scope, training_rows = "holdout_train", len(train_i)
+                model_path = path.with_suffix(".cbm")
+                model.save_model(str(model_path))
+                left = budget - (time.monotonic() - started) - output_margin
                 estimate = validation_time * len(y) / len(train_i)
-                if left < max(1, estimate * 1.1):
-                    notes.append("Kept baseline: insufficient time for validated full-data refit.")
+                if not request.get("refit", True):
+                    notes.append("Kept validated holdout model: full-data refit disabled by request.")
+                elif left < max(1, estimate * 1.1):
+                    notes.append("Kept validated holdout model: insufficient time for full-data refit.")
                 else:
                     parameters["iterations"] = count
                     final_model = model_class(**parameters)
                     final_model.fit(x, y, callbacks=[_DeadlineCallback(time.monotonic() + left)])
                     if final_model.tree_count_ != count:
-                        notes.append("Kept baseline: full refit hit deadline before validated tree count.")
+                        notes.append("Kept validated holdout model: full refit hit deadline before validated tree count.")
                     else:
                         prediction = np.asarray(final_model.predict(test_x)).reshape(-1)
                         probability = _aligned_proba(final_model, test_x, len(problem["classes"])) if classification else None
-                        path, schema = _output(problem, prediction, probability, request)
-                        score, chosen = learned_score, "catboost"
-                        model_path = path.with_suffix(".cbm")
-                        final_model.save_model(str(model_path))
+                        full_path, full_schema = _output(problem, prediction, probability, request)
+                        full_model_path = full_path.with_suffix(".cbm")
+                        final_model.save_model(str(full_model_path))
+                        path, schema, model_path = full_path, full_schema, full_model_path
+                        fit_scope, training_rows = "full_train", len(y)
             else:
                 notes.append("Dummy validation score was at least as good as CatBoost.")
-        except MLRequestError:
-            raise
+        except MLRequestError as exc:
+            if fit_scope != "holdout_train":
+                raise
+            notes.append(f"Full-data refit failed; kept validated holdout model: {str(exc)[:250]}")
         except Exception as exc:
-            # Baseline is already a valid standalone artifact; no fabricated model score.
-            notes.append(f"CatBoost failed; kept validated baseline: {type(exc).__name__}: {str(exc)[:250]}")
+            # Keep whichever complete candidate was last saved, with its honest score.
+            notes.append(f"CatBoost step failed; kept saved {chosen} ({fit_scope}): {type(exc).__name__}: {str(exc)[:250]}")
     elif action != "baseline":
         notes.append("Kept baseline: little time, one class, or no holdout.")
     manifest = {"model": chosen, "target": problem["target"], "features": problem["features"],
                 "categorical_features": categorical, "classes": problem["classes"],
                 "request": request, "validation_id": validation_id, "score": score,
                 "metric": problem["metric"], "direction": problem["direction"],
+                "fit_scope": fit_scope, "training_rows": training_rows,
                 "model_path": str(model_path) if model_path else None}
     manifest_path = path.with_suffix(".json")
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, allow_nan=False, indent=2), encoding="utf-8")
     result = dict(version=1, status="ok", candidate_path=str(path), schema=schema,
                   metric=problem["metric"], direction=problem["direction"],
-                  notes="; ".join([f"{chosen}; full training data used for final predictions"] + notes),
+                  notes="; ".join([f"{chosen}; predictions use {fit_scope} ({training_rows} rows)"] + notes),
+                  fit_scope=fit_scope, training_rows=training_rows,
                   model=chosen, manifest_path=str(manifest_path), baseline_path=baseline_path,
                   elapsed_seconds=round(time.monotonic() - started, 3))
     if score is not None:
         result.update(score=score, validation_id=validation_id)
-    if action == "finalize":
+    if action == "finalize" and fit_scope == "full_train":
         result["final"] = True
     return result
 

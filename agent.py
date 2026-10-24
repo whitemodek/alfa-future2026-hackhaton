@@ -150,13 +150,18 @@ class Agent:
         with (self.state_dir / 'events.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(redact(json.dumps(entry, ensure_ascii=False, allow_nan=False)) + '\n')
 
-    def _request(self):
-        # Drop only complete old assistant/tool exchanges, keeping initial instructions.
-        while len(json.dumps(self.messages).encode()) > self.config.context_bytes and len(self.messages) > 3:
-            end = 3
-            while end < len(self.messages) and self.messages[end]['role'] == 'tool':
-                end += 1
-            del self.messages[2:end]
+    def _discard_oldest_exchange(self):
+        if len(self.messages) <= 3:
+            return False
+        end = 3
+        while end < len(self.messages) and self.messages[end]['role'] == 'tool':
+            end += 1
+        if end == len(self.messages):
+            return False  # Keep the most recent result, especially an unregistered candidate.
+        del self.messages[2:end]
+        return True
+
+    def _request_payload(self):
         payload = self.messages + [{'role': 'user', 'content': json.dumps({
             'time_left_seconds': round(self.remaining(), 2),
             'phase': 'finalize' if (self.remaining() <= self.config.reserve_seconds or
@@ -165,13 +170,25 @@ class Agent:
             'best': self.store.best})}]
         payload = json.loads(redact(json.dumps(payload, ensure_ascii=False)))
         input_bound = len(json.dumps([payload, TOOLS], ensure_ascii=False).encode('utf-8')) + 512
+        return payload, input_bound
+
+    def _request(self):
+        # Remove complete old exchanges, preserving system/task and latest results.
+        while len(json.dumps(self.messages, ensure_ascii=False).encode()) > self.config.context_bytes:
+            if not self._discard_oldest_exchange():
+                break
+        payload, input_bound = self._request_payload()
         if input_bound > self.config.context_bytes + 20000:
             raise BudgetExceeded('context limit reached')
         for retry in range(self.config.retries + 1):
+            if self.attempts >= self.config.max_api_attempts:
+                raise BudgetExceeded('API attempt limit reached')
+            while self.tokens + input_bound + self.config.response_tokens > self.config.max_tokens:
+                if not self._discard_oldest_exchange():
+                    raise BudgetExceeded('API token budget reached')
+                payload, input_bound = self._request_payload()
             # Reserve a conservative UTF-8 byte bound. Refund with exact reported usage.
             reservation = input_bound + self.config.response_tokens
-            if self.attempts >= self.config.max_api_attempts or self.tokens + reservation > self.config.max_tokens:
-                raise BudgetExceeded('API budget reached')
             if self.remaining() <= 2:
                 raise BudgetExceeded('time limit reached')
             self.attempts += 1
@@ -190,7 +207,8 @@ class Agent:
             except Exception as exc:
                 status = getattr(exc, 'status_code', None)
                 transient = status == 429 or (isinstance(status, int) and status >= 500) or type(exc).__name__ in ('APITimeoutError', 'APIConnectionError')
-                self.journal('api_error', error_type=type(exc).__name__, status=status)
+                self.journal('api_error', error_type=type(exc).__name__, status=status,
+                             charged_tokens=self.tokens)
                 delay = min(2 ** retry, 8)
                 if not transient or retry == self.config.retries or self.remaining() <= delay + 2:
                     raise
@@ -267,7 +285,16 @@ class Agent:
             return {'submission': str(path)}
         timeout = self._timeout(args.get('timeout_seconds'))
         if name == 'run_backend':
-            return self._backend(args['request'], timeout)
+            result = self._backend(args['request'], timeout)
+            try:
+                registration = self._accept_native_result(result)
+                if registration is not None:
+                    result['registration'] = registration
+            except Exception as exc:
+                result['registration'] = {'accepted': False, 'error': redact(str(exc))[:2000],
+                                          'type': type(exc).__name__}
+                self.journal('native_registration_error', error_type=type(exc).__name__)
+            return result
         code = args['code']
         if not isinstance(code, str):
             raise ValueError('code must be a string')
@@ -308,6 +335,18 @@ class Agent:
         self.journal('backend', result=result)
         return result
 
+    def _accept_native_result(self, result):
+        response = result.get('response', {})
+        if (result.get('exit_code') != 0 or response.get('status') != 'ok'
+                or not response.get('candidate_path')):
+            return None
+        if not self.configured:
+            self.execute('configure_submission', response['schema'])
+        candidate = {key: response[key] for key in ('candidate_path', 'score', 'metric',
+                     'direction', 'validation_id', 'final') if key in response}
+        # Existing schema and validation identity remain authoritative.
+        return self.execute('register_candidate', candidate)
+
     def _bootstrap(self):
         module = Path(__file__).resolve().with_name('ml_backend.py')
         if not module.is_file() or self.config.bootstrap_seconds == 0:
@@ -330,14 +369,12 @@ class Agent:
                     if not self.store.best:
                         break
                     continue
-                if not self.configured:
-                    self.execute('configure_submission', response['schema'])
-                candidate = {key: response[key] for key in ('candidate_path', 'score', 'metric',
-                             'direction', 'validation_id', 'final') if key in response}
-                self.execute('register_candidate', candidate)
+                registration = self._accept_native_result(result)
+                if registration is None:
+                    raise ValueError('native training returned no candidate')
                 self.messages.append({'role': 'user', 'content':
-                    'Native ML startup result (already registered): ' +
-                    redact(json.dumps(response, ensure_ascii=False))})
+                    'Native ML startup result (already evaluated and saved if better): ' +
+                    redact(json.dumps({'response': response, 'registration': registration}, ensure_ascii=False))})
             except Exception as exc:
                 self.journal('bootstrap_error', action=action, error_type=type(exc).__name__)
                 if not self.store.best:

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -67,6 +68,71 @@ class MLBackendTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.target).all())
         self.assertGreater(result.target.iloc[0], result.target.iloc[1])
         self.assertTrue(Path(experiment["manifest_path"]).is_file())
+
+    def test_validated_model_survives_without_full_refit(self):
+        baseline = run(self.envelope(action="baseline"))
+        learned = run(self.envelope(action="finalize", refit=False, iterations=120, depth=4))
+        self.assertEqual(learned["model"], "catboost", learned["notes"])
+        self.assertLess(learned["score"], baseline["score"] * 0.5)
+        self.assertEqual(learned["fit_scope"], "holdout_train")
+        self.assertGreater(learned["training_rows"], 0)
+        self.assertLess(learned["training_rows"], 160)
+        self.assertFalse(learned.get("final", False))
+        manifest = json.loads(Path(learned["manifest_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["fit_scope"], "holdout_train")
+        self.assertEqual(manifest["training_rows"], learned["training_rows"])
+        self.assertTrue(Path(manifest["model_path"]).is_file())
+        self.assert_contract(learned)
+
+    def test_failed_full_refit_keeps_validated_learned_candidate(self):
+        from catboost import CatBoostRegressor
+        original_fit = CatBoostRegressor.fit
+
+        def fail_only_full_fit(model, *args, **kwargs):
+            if "eval_set" not in kwargs:
+                raise RuntimeError("simulated full-refit failure")
+            return original_fit(model, *args, **kwargs)
+
+        with patch.object(CatBoostRegressor, "fit", fail_only_full_fit):
+            result = run(self.envelope(action="finalize", iterations=120, depth=4))
+        self.assertEqual(result["model"], "catboost", result["notes"])
+        self.assertEqual(result["fit_scope"], "holdout_train")
+        self.assertNotIn("final", result)
+        self.assertIn("simulated full-refit failure", result["notes"])
+        self.assert_contract(result)
+
+    def test_partial_full_refit_keeps_validated_learned_candidate(self):
+        from catboost import CatBoostRegressor
+        original_fit = CatBoostRegressor.fit
+
+        def incomplete_full_fit(model, *args, **kwargs):
+            if "eval_set" not in kwargs:
+                model.set_params(iterations=1)
+            return original_fit(model, *args, **kwargs)
+
+        with patch.object(CatBoostRegressor, "fit", incomplete_full_fit):
+            result = run(self.envelope(action="finalize", iterations=120, depth=4))
+        self.assertEqual(result["model"], "catboost", result["notes"])
+        self.assertEqual(result["fit_scope"], "holdout_train")
+        self.assertNotIn("final", result)
+        self.assertIn("before validated tree count", result["notes"])
+        self.assert_contract(result)
+
+    def test_invalid_full_refit_output_keeps_validated_learned_candidate(self):
+        from catboost import CatBoostRegressor
+        original_fit = CatBoostRegressor.fit
+
+        def invalid_full_fit(model, *args, **kwargs):
+            if "eval_set" not in kwargs:
+                raise MLRequestError("invalid refit predictions")
+            return original_fit(model, *args, **kwargs)
+
+        with patch.object(CatBoostRegressor, "fit", invalid_full_fit):
+            result = run(self.envelope(action="finalize", iterations=120, depth=4))
+        self.assertEqual(result["fit_scope"], "holdout_train")
+        self.assertIn("invalid refit predictions", result["notes"])
+        self.assertNotIn("final", result)
+        self.assert_contract(result)
 
     def test_string_labels_roundtrip_and_schema(self):
         self.classify()
