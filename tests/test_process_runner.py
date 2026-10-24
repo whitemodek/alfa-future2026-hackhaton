@@ -65,6 +65,21 @@ class ExecutionTests(unittest.TestCase):
         result = self.run_code("import sys\nprint(repr(sys.stdin.read()))")
         self.assertEqual(result["stdout"].strip(), "''")
 
+    def test_long_training_output_keeps_final_metric_and_error(self):
+        result = self.run_code("import sys\nprint('START')\nprint('x' * 50000)\n"
+                               "print('FINAL_SCORE=0.75')\n"
+                               "print('y' * 50000, file=sys.stderr)\n"
+                               "raise RuntimeError('final diagnostic')", max_output_bytes=200)
+        self.assertNotEqual(result['exit_code'], 0)
+        self.assertTrue(result['stdout'].startswith('START'))
+        self.assertIn('FINAL_SCORE=0.75', result['stdout'])
+        self.assertIn('final diagnostic', result['stderr'])
+        self.assertLess(len(result['stdout']), 240)
+
+    def test_short_capture_preserves_all_bytes_in_order(self):
+        result = self.run_code("import sys\nsys.stdout.write('abcdefghijk')", max_output_bytes=12)
+        self.assertEqual(result['stdout'], 'abcdefghijk')
+
     def test_timeout(self):
         result = self.run_code("import time\ntime.sleep(60)", timeout_seconds=0.2)
         self.assertTrue(result["timed_out"])
@@ -76,16 +91,16 @@ class ExecutionTests(unittest.TestCase):
         self.assertFalse(result["timed_out"])
 
     def test_descendant_cleanup_on_timeout_and_normal_exit(self):
-        for timeout in (0.6, 5):
+        for timeout in (2, 8):
             with self.subTest(timeout=timeout):
                 marker = self.cwd / "child_pid"
                 marker.unlink(missing_ok=True)
                 result = self.run_code(
                     "import subprocess, sys, time\nfrom pathlib import Path\n"
                     "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-                    "Path('child_pid').write_text(str(child.pid))\ntime.sleep(1)",
+                    "Path('child_pid').write_text(str(child.pid))\ntime.sleep(3)",
                     timeout_seconds=timeout)
-                self.assertEqual(result["timed_out"], timeout < 1)
+                self.assertEqual(result["timed_out"], timeout < 3)
                 pid = int(marker.read_text())
                 deadline = time.monotonic() + 2
                 while time.monotonic() < deadline:

@@ -287,36 +287,14 @@ def _features(problem):
 
 
 def _split(problem, request):
-    import numpy as np
-    from sklearn.model_selection import train_test_split
-    y = problem["y"]
-    if len(y) < 5:
-        return None, None
-    # The split never changes with model random_seed or model hyperparameters.
-    indices = np.arange(len(y))
-    validation_fraction = float(request.get("validation_fraction", 0.2))
-    if not 0.1 <= validation_fraction <= 0.4:
-        raise MLRequestError("validation_fraction must be between 0.1 and 0.4.")
-    if request.get("split", "random") == "time":
-        split = max(1, int(len(y) * (1 - validation_fraction)))
-        return indices[:split], indices[split:]
-    if request.get("split", "random") != "random":
-        raise MLRequestError("split must be random or time; use time only for correctly ordered data.")
-    stratify = None
-    if problem["classes"] is not None:
-        counts = y.value_counts()
-        n_valid = math.ceil(len(y) * validation_fraction)
-        if counts.min() >= 2 and n_valid >= len(counts) and len(y) - n_valid >= len(counts):
-            stratify = y
-    train, valid = train_test_split(indices, test_size=validation_fraction, random_state=42, stratify=stratify)
-    if problem["classes"] is not None:
-        # Rare labels must be seen by training, even when stratification is impossible.
-        missing = set(y.unique()) - set(y.iloc[train].unique())
-        move = [next(int(i) for i in valid if y.iloc[i] == label) for label in missing]
-        if move:
-            train = np.concatenate([train, move])
-            valid = np.array([i for i in valid if i not in move], dtype=int)
-    return (train, valid) if len(valid) else (None, None)
+    from ml_validation import plan_validation
+    try:
+        plan = plan_validation(problem, request)
+    except ValueError as exc:
+        raise MLRequestError(str(exc)) from exc
+    problem["validation"] = {key: value for key, value in plan.items()
+                             if key not in {"train_indices", "valid_indices"}}
+    return plan["train_indices"], plan["valid_indices"]
 
 
 def _aligned_proba(model, x, count):
@@ -346,7 +324,8 @@ def _score(problem, y, prediction, probability):
         average = {"macro_f1": "macro", "weighted_f1": "weighted", "f1": "binary"}[name]
         if name == "f1" and len(problem["classes"]) != 2:
             raise MLRequestError("Multiclass F1 needs an explicit averaging metric such as macro_f1.")
-        value = metrics.f1_score(y, prediction, average=average, zero_division=0)
+        options = {} if name == "f1" else {"labels": list(range(len(problem["classes"])))}
+        value = metrics.f1_score(y, prediction, average=average, zero_division=0, **options)
     elif name == "accuracy":
         value = metrics.accuracy_score(y, prediction)
     elif name == "balanced_accuracy":
@@ -465,6 +444,132 @@ class _DeadlineCallback:
         return time.monotonic() < self.deadline
 
 
+def _evaluation_metric(problem):
+    """Select trees using the submission metric, without training class weights.
+
+    Class weights alter the training loss, not the organizer's evaluation.
+    Metrics without an equivalent CatBoost definition retain the training loss.
+    """
+    name = problem["metric"].removeprefix("neg_")
+    metrics = {"rmse": "RMSE", "mse": "RMSE", "r2": "R2", "mae": "MAE",
+               "macro_f1": "TotalF1:average=Macro;use_weights=false",
+               "weighted_f1": "TotalF1:average=Weighted;use_weights=false",
+               "f1": "F1:use_weights=false", "accuracy": "Accuracy:use_weights=false",
+               "balanced_accuracy": "BalancedAccuracy:use_weights=false",
+               "roc_auc": "AUC:use_weights=false"}
+    if name in {"roc_auc", "balanced_accuracy"} and len(problem["classes"]) > 2:
+        # CatBoost's multiclass AUC differs from macro one-vs-rest, and its
+        # BalancedAccuracy implementation only supports binary targets.
+        return None
+    if name == "log_loss":
+        return ("MultiClass" if len(problem["classes"]) > 2 else "Logloss") + ":use_weights=false"
+    return metrics.get(name)
+
+
+def _file_hash(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _input_hashes(problem):
+    return {role: _file_hash(problem[role]) if problem[role] else None
+            for role in ('train_path', 'test_path', 'sample_path')}
+
+
+def _refit_saved(envelope, started, budget, threads):
+    """Refit the selected tree count without a second holdout training search."""
+    import numpy as np
+    from catboost import CatBoostClassifier, CatBoostRegressor
+    request = envelope['request']
+    root = Path(envelope.get('task_dir') or Path(envelope['task_path']).parent).resolve()
+    directory = root / '.ml-artifacts'
+    path = Path(str(request.get('manifest_path', '')))
+    if not path.is_absolute():
+        path = root / path
+    if (directory.is_symlink() or not directory.resolve().is_relative_to(root)
+            or path.is_symlink() or not path.is_file()
+            or not path.resolve().is_relative_to(directory.resolve())
+            or path.suffix != '.json' or path.stat().st_size > 64000):
+        raise MLRequestError('Refit manifest must be a bounded regular file inside .ml-artifacts.')
+    manifest = json.loads(path.read_text(encoding='utf-8'),
+                          parse_constant=lambda value: (_ for _ in ()).throw(MLRequestError('Nonfinite manifest')))
+    if (not isinstance(manifest, dict) or manifest.get('model') != 'catboost'
+            or manifest.get('fit_scope') != 'holdout_train'
+            or not isinstance(manifest.get('request'), dict)):
+        raise MLRequestError('Refit requires a validated CatBoost holdout manifest.')
+    score, count = manifest.get('score'), manifest.get('selected_iterations')
+    if type(score) not in (int, float) or not math.isfinite(score):
+        raise MLRequestError('Refit manifest needs a finite validation score.')
+    if type(count) is not int or not 1 <= count <= 4000:
+        raise MLRequestError('Invalid selected tree count in refit manifest.')
+    original_request = manifest['request']
+    problem = load_problem(dict(envelope, request=original_request))
+    train_i, valid_i = _split(problem, original_request)
+    if (train_i is None or manifest.get('input_hashes') != _input_hashes(problem)
+            or manifest.get('validation_id') != _validation_id(problem, train_i, valid_i)
+            or any(manifest.get(key) != problem[key] for key in
+                   ('target', 'features', 'classes', 'metric', 'direction'))):
+        raise MLRequestError('Refit data or validation no longer matches the selected experiment.')
+    model_path = Path(str(manifest.get('model_path', '')))
+    if (model_path.is_symlink() or not model_path.is_file()
+            or not model_path.resolve().is_relative_to(directory.resolve())
+            or manifest.get('model_sha256') != _file_hash(model_path)):
+        raise MLRequestError('Selected model file is missing or changed.')
+    classification = problem['classes'] is not None
+    model_class = CatBoostClassifier if classification else CatBoostRegressor
+    selected_model = model_class()
+    selected_model.load_model(str(model_path))
+    if selected_model.tree_count_ != count:
+        raise MLRequestError('Selected model and manifest tree counts differ.')
+    x, test_x, categorical = _features(problem)
+    if selected_model.feature_names_ != list(x.columns):
+        raise MLRequestError('Selected model features no longer match the data.')
+    probability = _aligned_proba(selected_model, x.iloc[valid_i], len(problem['classes'])) if classification else None
+    checked_score = _score(problem, problem['y'].iloc[valid_i],
+                           np.asarray(selected_model.predict(x.iloc[valid_i])).reshape(-1), probability)
+    if checked_score is None or not math.isclose(checked_score, score, rel_tol=1e-10, abs_tol=1e-10):
+        raise MLRequestError('Saved model does not reproduce its validation score.')
+    saved_parameters = manifest.get('training_parameters')
+    if not isinstance(saved_parameters, dict) or saved_parameters.get('iterations') != count:
+        raise MLRequestError('Refit manifest is missing selected training parameters.')
+    stored = selected_model.get_params()
+    keys = ('depth', 'learning_rate', 'loss_function', 'random_seed', 'auto_class_weights')
+    if any(saved_parameters.get(key) != stored.get(key) for key in keys):
+        raise MLRequestError('Refit parameters differ from the selected model.')
+    # Only gradient-affecting saved settings cross into the final fit. No paths,
+    # callbacks, evaluation sets or arbitrary CatBoost options come from JSON.
+    parameters = {key: stored[key] for key in keys if key in stored}
+    parameters.update(iterations=count, thread_count=threads, cat_features=categorical,
+                      verbose=False, allow_writing_files=False)
+    left = budget - (time.monotonic() - started) - min(15, max(2, budget * .08))
+    if left < 1:
+        raise MLRequestError('Not enough time left for full-data refit.')
+    model = model_class(**parameters)
+    model.fit(x, problem['y'], callbacks=[_DeadlineCallback(time.monotonic() + left)])
+    if model.tree_count_ != count:
+        raise MLRequestError('Full-data refit stopped before the selected tree count.')
+    prediction = np.asarray(model.predict(test_x)).reshape(-1)
+    probability = _aligned_proba(model, test_x, len(problem['classes'])) if classification else None
+    candidate, schema = _output(problem, prediction, probability, original_request)
+    final_model_path = candidate.with_suffix('.cbm')
+    model.save_model(str(final_model_path))
+    final_manifest = dict(manifest, fit_scope='full_train', training_rows=len(x),
+                          model_path=str(final_model_path), model_sha256=_file_hash(final_model_path))
+    final_manifest_path = candidate.with_suffix('.json')
+    final_manifest_path.write_text(json.dumps(final_manifest, ensure_ascii=False, allow_nan=False, indent=2),
+                                    encoding='utf-8')
+    return dict(version=1, status='ok', candidate_path=str(candidate), schema=schema,
+                score=score, metric=problem['metric'], direction=problem['direction'],
+                validation_id=manifest['validation_id'], validation=problem['validation'],
+                fit_scope='full_train', training_rows=len(x), selected_iterations=count,
+                model='catboost', manifest_path=str(final_manifest_path), final=True,
+                notes='Full-data refit of saved parameters and selected tree count; original holdout score retained.',
+                elapsed_seconds=round(time.monotonic() - started, 3))
+
+
 def run(envelope):
     started = time.monotonic()
     import numpy as np
@@ -473,7 +578,7 @@ def run(envelope):
     if not isinstance(request, dict):
         raise MLRequestError("request must be an object.")
     action = request.get("action", "experiment")
-    if action not in {"inspect", "baseline", "experiment", "train", "finalize"}:
+    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit"}:
         raise MLRequestError(f"Unsupported action: {action}")
     if not isinstance(request.get("refit", True), bool):
         raise MLRequestError("refit must be true or false.")
@@ -481,7 +586,11 @@ def run(envelope):
     if not math.isfinite(budget) or budget < 1:
         raise MLRequestError("time_budget_seconds must be finite and at least 1.")
     threads = max(1, min(8, int(envelope.get("threads", 1))))
+    if action == 'refit':
+        return _refit_saved(envelope, started, budget, threads)
     problem = load_problem(envelope)
+    # Choose the validation policy before baseline registration fixes its identity.
+    train_i, valid_i = _split(problem, request)
     if action == "inspect":
         return dict(version=1, status="ok", train_path=str(problem["train_path"]),
                     test_path=str(problem["test_path"]),
@@ -492,10 +601,10 @@ def run(envelope):
                     direction=problem["direction"], features=problem["features"][:100],
                     feature_dtypes={name: str(problem["train"][name].dtype) for name in problem["features"][:100]},
                     train_rows=len(problem["train"]), test_rows=len(problem["test"]),
-                    classes=problem["classes"], prediction_type=problem["prediction_type"])
+                    classes=problem["classes"], prediction_type=problem["prediction_type"],
+                    validation=problem["validation"])
     x, test_x, categorical = _features(problem)
     y = problem["y"]
-    train_i, valid_i = _split(problem, request)
     classification = problem["classes"] is not None
     dummy = DummyClassifier(strategy="prior") if classification else DummyRegressor(
         strategy="median" if problem["metric"].removeprefix("neg_") == "mae" else "mean")
@@ -512,13 +621,14 @@ def run(envelope):
             notes.append("Validation metric unavailable on this split: " + str(exc)[:200])
         validation_id = _validation_id(problem, train_i, valid_i)
     else:
-        notes.append("Too few rows for a useful holdout; score omitted.")
+        notes.append(problem["validation"]["rationale"] + "; score omitted.")
     # Write a complete baseline before fitting anything expensive.
     dummy.fit(dummy_x, y)
     prediction = dummy.predict(np.zeros((len(test_x), 1)))
     probability = _aligned_proba(dummy, np.zeros((len(test_x), 1)), len(problem["classes"])) if classification else None
     path, schema = _output(problem, prediction, probability, request)
     chosen, model_path = "dummy", None
+    selected_iterations, training_parameters = None, None
     fit_scope, training_rows = "full_train", len(y)
     baseline_path = str(path)
     remaining = budget - (time.monotonic() - started)
@@ -537,21 +647,37 @@ def run(envelope):
                               loss_function=loss, thread_count=threads, random_seed=int(request.get("random_seed", 42)),
                               verbose=False, allow_writing_files=False, cat_features=categorical)
             if classification:
-                weighting = request.get("auto_class_weights", "SqrtBalanced" if problem["metric"] in {
+                weighting = request.get("auto_class_weights", "SqrtBalanced" if problem["metric"].removeprefix("neg_") in {
                     "macro_f1", "balanced_accuracy"} else "None")
                 if weighting not in {"None", "Balanced", "SqrtBalanced"}:
                     raise MLRequestError("auto_class_weights must be None, Balanced or SqrtBalanced.")
                 if weighting != "None":
                     parameters["auto_class_weights"] = weighting
+            evaluation = _evaluation_metric(problem)
+            if evaluation:
+                if not parameters.get("auto_class_weights"):
+                    # CatBoost rejects explicit use_weights on some unweighted metrics.
+                    evaluation = evaluation.replace(";use_weights=false", "").replace(":use_weights=false", "")
+                parameters["custom_metric"] = evaluation
             model = model_class(**parameters)
             fit_started = time.monotonic()
             # Refit on all rows is slower. Reserve output time independently of
             # validation/refit and preserve the learned holdout model either way.
             output_margin = min(15, max(2, budget * 0.08))
             available = budget - (fit_started - started) - output_margin
-            validation_deadline = fit_started + max(1, available * 0.35)
+            validation_share = 0.35 if request.get("refit", True) else 1.0
+            validation_deadline = fit_started + max(1, available * validation_share)
             model.fit(x.iloc[train_i], y.iloc[train_i], eval_set=(x.iloc[valid_i], y.iloc[valid_i]),
-                      early_stopping_rounds=60, callbacks=[_DeadlineCallback(validation_deadline)])
+                      early_stopping_rounds=60, use_best_model=not bool(evaluation),
+                      callbacks=[_DeadlineCallback(validation_deadline)])
+            if evaluation:
+                # Smooth training loss controls patience. Macro F1 can plateau
+                # for many trees before rare classes improve, so using it for
+                # early stopping would discard later improvements.
+                curve = model.get_evals_result()["validation"][evaluation]
+                choose = np.argmax if METRICS[problem["metric"].removeprefix("neg_")] == "maximize" else np.argmin
+                selected = int(choose(curve)) + 1
+                model.shrink(selected)
             validation_time = time.monotonic() - fit_started
             learned_prediction = np.asarray(model.predict(x.iloc[valid_i])).reshape(-1)
             learned_probability = _aligned_proba(model, x.iloc[valid_i], len(problem["classes"])) if classification else None
@@ -560,6 +686,8 @@ def run(envelope):
                 (learned_score >= score if problem["direction"] == "maximize" else learned_score <= score))
             if better:
                 count = max(1, int(model.tree_count_))
+                selected_iterations = count
+                training_parameters = dict(parameters, iterations=count)
                 # This is already an honestly scored model. Its predictions are
                 # useful even when a full-data refit cannot finish in time.
                 prediction = np.asarray(model.predict(test_x)).reshape(-1)
@@ -603,8 +731,12 @@ def run(envelope):
     manifest = {"model": chosen, "target": problem["target"], "features": problem["features"],
                 "categorical_features": categorical, "classes": problem["classes"],
                 "request": request, "validation_id": validation_id, "score": score,
+                "validation": problem["validation"],
                 "metric": problem["metric"], "direction": problem["direction"],
                 "fit_scope": fit_scope, "training_rows": training_rows,
+                "selected_iterations": selected_iterations, "training_parameters": training_parameters,
+                "input_hashes": _input_hashes(problem),
+                "model_sha256": _file_hash(model_path) if model_path else None,
                 "model_path": str(model_path) if model_path else None}
     manifest_path = path.with_suffix(".json")
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, allow_nan=False, indent=2), encoding="utf-8")
@@ -612,6 +744,8 @@ def run(envelope):
                   metric=problem["metric"], direction=problem["direction"],
                   notes="; ".join([f"{chosen}; predictions use {fit_scope} ({training_rows} rows)"] + notes),
                   fit_scope=fit_scope, training_rows=training_rows,
+                  validation=problem["validation"],
+                  selected_iterations=selected_iterations,
                   model=chosen, manifest_path=str(manifest_path), baseline_path=baseline_path,
                   elapsed_seconds=round(time.monotonic() - started, 3))
     if score is not None:

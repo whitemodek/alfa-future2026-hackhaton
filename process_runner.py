@@ -46,6 +46,8 @@ class _Capture:
     def __init__(self, limit: int):
         self.limit = limit
         self.data = bytearray()
+        self.tail = bytearray()
+        self.total = 0
         self.truncated = False
 
     def drain(self, pipe) -> None:
@@ -54,18 +56,28 @@ class _Capture:
                 chunk = pipe.read(8192)
                 if not chunk:
                     break
-                remaining = self.limit - len(self.data)
-                self.data.extend(chunk[:remaining])
-                if len(chunk) > remaining:
-                    self.truncated = True
+                self.total += len(chunk)
+                head_limit = (self.limit + 1) // 2
+                tail_limit = self.limit - head_limit
+                head_room = head_limit - len(self.data)
+                self.data.extend(chunk[:head_room])
+                remainder = chunk[head_room:]
+                if tail_limit:
+                    self.tail.extend(remainder)
+                    if len(self.tail) > tail_limit:
+                        del self.tail[:-tail_limit]
+                self.truncated = self.total > self.limit
         except (OSError, ValueError):
             pass
         finally:
             pipe.close()
 
     def text(self) -> str:
-        value = self.data.decode("utf-8", errors="replace")
-        return value + ("\n[output truncated]" if self.truncated else "")
+        if not self.truncated:
+            return (self.data + self.tail).decode("utf-8", errors="replace")
+        # Preserve final metrics and tracebacks after verbose training progress.
+        return (self.data.decode("utf-8", errors="replace") + "\n[output truncated]\n" +
+                self.tail.decode("utf-8", errors="replace"))
 
 
 def _cleanup(process: subprocess.Popen, descendants: dict) -> None:

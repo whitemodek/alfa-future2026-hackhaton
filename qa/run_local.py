@@ -138,19 +138,24 @@ def run_task(zip_path, task_dir, limit_seconds):
     except (ValueError, TypeError):
         checked = {'format_ok': False, 'problems': ['Submission checker failed'], 'metric': None}
     return {'task': task_dir.name, 'exit_code': process.returncode, 'killed_by_limit': killed,
+            'success': process.returncode == 0 and not killed and bool(checked.get('format_ok')),
             'minutes': round(elapsed / 60, 2), 'check': checked,
             'stderr_tail': _safe_tail(err), 'work_dir': str(work)}
 
 
-if __name__ == '__main__':
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('zip')
     parser.add_argument('tasks_root')
     parser.add_argument('--limit-min', type=float, default=180)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     tasks = sorted(p for p in Path(args.tasks_root).iterdir() if (p / 'task.md').exists())
     if not tasks or not math.isfinite(args.limit_min) or args.limit_min <= 0:
         parser.error('Provide at least one task and a positive time limit')
     report = [run_task(Path(args.zip).resolve(), task, args.limit_min * 60) for task in tasks]
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    sys.exit(0 if all(item['check'].get('format_ok') for item in report) else 1)
+    return 0 if all(item.get('success', False) for item in report) else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

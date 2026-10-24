@@ -84,6 +84,45 @@ class MLBackendTests(unittest.TestCase):
         self.assertTrue(Path(manifest["model_path"]).is_file())
         self.assert_contract(learned)
 
+    def test_metric_selects_unweighted_macro_f1_and_records_selected_model(self):
+        from catboost import CatBoostClassifier
+        train = pd.read_csv(self.root / "train.csv")
+        train["target"] = np.where(train.x.fillna(0) > 0, "large", "small")
+        train.to_csv(self.root / "train.csv", index=False)
+        self.task.write_text("Classification, target target, primary macro F1.", encoding="utf-8")
+        observed = []
+        original_fit = CatBoostClassifier.fit
+
+        def record_fit(model, *args, **kwargs):
+            observed.append(model.get_params())
+            return original_fit(model, *args, **kwargs)
+
+        with patch.object(CatBoostClassifier, "fit", record_fit):
+            result = run(self.envelope(action="experiment", iterations=120, refit=False))
+        self.assertEqual(result["model"], "catboost", result["notes"])
+        self.assertEqual(observed[0]["custom_metric"], "TotalF1:average=Macro;use_weights=false")
+        manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["selected_iterations"], result["selected_iterations"])
+        self.assertGreater(result["selected_iterations"], 0)
+        self.assertEqual(manifest["training_parameters"]["iterations"], result["selected_iterations"])
+        self.assert_contract(result)
+
+    def test_no_refit_releases_training_time_reservation(self):
+        from catboost import CatBoostRegressor
+        deadlines = []
+        original_fit = CatBoostRegressor.fit
+
+        def record_fit(model, *args, **kwargs):
+            if "eval_set" in kwargs:
+                import time
+                deadlines.append(kwargs["callbacks"][0].deadline - time.monotonic())
+            return original_fit(model, *args, **kwargs)
+
+        with patch.object(CatBoostRegressor, "fit", record_fit):
+            run(self.envelope(iterations=20, refit=True))
+            run(self.envelope(iterations=20, refit=False))
+        self.assertGreater(deadlines[1], deadlines[0] * 2)
+
     def test_failed_full_refit_keeps_validated_learned_candidate(self):
         from catboost import CatBoostRegressor
         original_fit = CatBoostRegressor.fit

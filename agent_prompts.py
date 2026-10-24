@@ -13,7 +13,11 @@ candidate early. register_candidate snapshots and validates it. Only use compara
 validation scores with identical metric, direction and validation_id (split identifier).
 Unscored candidates provide a fallback; scored ones improve it. Keep experiments reproducible
 by writing scripts. Save predictions before spending time on more experiments.
-The bundled ml_backend.py supports inspect, baseline, experiment, train and finalize actions
+run_python returns experiment_path with the saved executed source. Read or rerun that file
+instead of regenerating it; the conversation replaces executed code with its path. Status includes
+recent_experiments so results and settings survive context trimming. Reuse successful settings
+and avoid repeating experiments that already failed or lost on the same validation split.
+The bundled ml_backend.py supports inspect, baseline, experiment, train, finalize and refit actions
 through run_backend. Startup normally registers a cheap baseline and a validated CatBoost
 candidate before your first request. Preserve the existing submission schema.
 All successful run_backend training candidates are automatically validated and saved if better;
@@ -21,6 +25,14 @@ check the returned registration field. register_candidate is needed for custom r
 Read startup results before training again. Use explicit paths, target, problem_type, metric, direction,
 prediction_type and ID columns when inference is ambiguous. Supported tuning fields include
 iterations, depth, learning_rate, random_seed, auto_class_weights and validation_fraction.
+Validation options: split=auto (default), random, time, or group; time_column,
+group_columns, group_by_features. Use refit=false to spend an exploration call on holdout
+training. For a selected holdout model, action=refit with its manifest_path trains the exact
+validated tree count on all rows without repeating validation or changing its reported score.
+The orchestrator also attempts this once before publication if enough compute time remains.
+Inspect the selected validation strategy and its rationale. Preserve automatic time/group-aware
+validation across experiments; do not switch to a random split to inflate the reported score.
+Temporal distribution shift and duplicated entities can make random validation misleading.
 Use run_backend to compare a few justified configurations, rather than regenerating standard
 training code. run_python is available for other task types, diagnosis and feature engineering.
 Do not invent validation results. Respect time_left and finalization phase.

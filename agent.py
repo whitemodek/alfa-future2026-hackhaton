@@ -44,11 +44,19 @@ def metric_direction(metric):
 
 
 def shrink(text, limit):
-    if not isinstance(text, str) or len(text) <= limit:
+    if not isinstance(text, str):
         return text
-    head = limit * 3 // 10
-    tail = limit - head
-    return f"{text[:head]}\n...[{len(text) - limit} chars skipped]...\n{text[-tail:]}"
+    encoded = text.encode('utf-8')
+    if len(encoded) <= limit:
+        return text
+    marker = f'\n...[truncated from {len(encoded)} bytes]...\n'
+    if len(marker) >= limit:
+        return encoded[:limit].decode('utf-8', errors='ignore')
+    available = limit - len(marker)
+    head = available * 3 // 10
+    tail = available - head
+    return (encoded[:head].decode('utf-8', errors='ignore') + marker +
+            encoded[-tail:].decode('utf-8', errors='ignore'))
 
 
 def output_names_from_task(task, task_dir):
@@ -128,6 +136,9 @@ class Agent:
                                              if n != 'submission.csv']
         self.finished = False
         self.attempts = self.tokens = self.step = 0
+        self.experiments = []
+        self._native_best = None
+        self.finalization_attempted = False
         self.messages = [ {'role': 'system', 'content': SYSTEM_PROMPT},
                          {'role': 'user', 'content': 'TASK:\n' + self.task + '\nFILES:\n' +
                           json.dumps(inventory(self.task_dir), ensure_ascii=False)} ]
@@ -167,7 +178,8 @@ class Agent:
             'phase': 'finalize' if (self.remaining() <= self.config.reserve_seconds or
                                    self.step >= self.config.max_steps - 2 or
                                    self.tokens >= self.config.max_tokens * 0.8) else 'explore',
-            'best': self.store.best})}]
+            'best': self.store.best,
+            'recent_experiments': self.experiments})}]
         payload = json.loads(redact(json.dumps(payload, ensure_ascii=False)))
         input_bound = len(json.dumps([payload, TOOLS], ensure_ascii=False).encode('utf-8')) + 512
         return payload, input_bound
@@ -185,10 +197,15 @@ class Agent:
                 raise BudgetExceeded('API attempt limit reached')
             while self.tokens + input_bound + self.config.response_tokens > self.config.max_tokens:
                 if not self._discard_oldest_exchange():
-                    raise BudgetExceeded('API token budget reached')
+                    break
                 payload, input_bound = self._request_payload()
+            response_tokens = min(self.config.response_tokens,
+                                  self.config.max_tokens - self.tokens - input_bound)
+            # A short final tool call can fit even when the usual completion allowance cannot.
+            if response_tokens < min(256, self.config.response_tokens):
+                raise BudgetExceeded('API token budget reached')
             # Reserve a conservative UTF-8 byte bound. Refund with exact reported usage.
-            reservation = input_bound + self.config.response_tokens
+            reservation = input_bound + response_tokens
             if self.remaining() <= 2:
                 raise BudgetExceeded('time limit reached')
             self.attempts += 1
@@ -196,11 +213,11 @@ class Agent:
             try:
                 result = self.client.chat.completions.create(
                     model=self.model, messages=payload, tools=TOOLS, parallel_tool_calls=False,
-                    max_tokens=self.config.response_tokens,
+                    max_tokens=response_tokens,
                     timeout=min(self.config.api_seconds, self.remaining() - 1))
                 usage = getattr(result, 'usage', None)
                 actual = getattr(usage, 'total_tokens', None)
-                if isinstance(actual, int) and actual >= 0:
+                if type(actual) is int and actual >= 0:
                     self.tokens += actual - reservation
                 self.journal('api', attempt=self.attempts, charged_tokens=self.tokens)
                 return result.choices[0].message
@@ -294,15 +311,47 @@ class Agent:
                 result['registration'] = {'accepted': False, 'error': redact(str(exc))[:2000],
                                           'type': type(exc).__name__}
                 self.journal('native_registration_error', error_type=type(exc).__name__)
+            self._remember_experiment(name, args, result)
             return result
         code = args['code']
         if not isinstance(code, str):
             raise ValueError('code must be a string')
         # Save reproducible experiment source, without secrets, separately from bounded output.
-        (self.state_dir / f'experiment-{self.step:03d}-{uuid.uuid4().hex[:8]}.py').write_text(redact(code), encoding='utf-8')
+        experiment_path = self.state_dir / f'experiment-{self.step:03d}-{uuid.uuid4().hex[:8]}.py'
+        experiment_path.write_text(redact(code), encoding='utf-8')
         result = run_python(code, self.task_dir, timeout, self.config.memory_mb, self.config.threads)
+        result['experiment_path'] = str(experiment_path.relative_to(self.task_dir))
         self.journal('execution', result=result)
+        self._remember_experiment(name, args, result)
         return result
+
+    def _remember_experiment(self, name, args, result):
+        """Retain bounded factual outcomes when expensive full exchanges are discarded."""
+        response = result.get('response', {})
+        entry = {'tool': name, 'step': self.step, 'exit_code': result.get('exit_code')}
+        if name == 'run_backend':
+            entry['request'] = shrink(json.dumps(args['request'], ensure_ascii=False), 700)
+            entry.update({key: response[key] for key in (
+                'model', 'score', 'metric', 'direction', 'validation_id', 'fit_scope',
+                'candidate_path', 'manifest_path') if key in response})
+            validation = response.get('validation')
+            if isinstance(validation, dict):
+                entry['validation'] = {key: shrink(str(validation[key]), 300) for key in
+                                       ('strategy', 'rationale') if key in validation}
+            if 'registration' in result:
+                entry['registration'] = {key: result['registration'][key] for key in
+                                         ('accepted', 'reason', 'error') if key in result['registration']}
+        else:
+            entry['experiment_path'] = result['experiment_path']
+            entry['output_summary'] = shrink(result.get('stdout', '') + '\n' +
+                                             result.get('stderr', ''), 400)
+        entry = {key: shrink(value, 700) if isinstance(value, str) else value
+                 for key, value in entry.items()}
+        self.experiments.append(entry)
+        # Long paths/validation identifiers cannot grow status context without bound.
+        while len(self.experiments) > 8 or (len(self.experiments) > 1 and
+                len(json.dumps(self.experiments, ensure_ascii=False).encode('utf-8')) > 6000):
+            self.experiments.pop(0)
 
     def _backend(self, request, timeout):
         if not isinstance(request, dict):
@@ -345,7 +394,36 @@ class Agent:
         candidate = {key: response[key] for key in ('candidate_path', 'score', 'metric',
                      'direction', 'validation_id', 'final') if key in response}
         # Existing schema and validation identity remain authoritative.
-        return self.execute('register_candidate', candidate)
+        registration = self.execute('register_candidate', candidate)
+        if registration.get('accepted'):
+            self._native_best = {'response': dict(response),
+                                 'snapshot': registration['snapshot']}
+        return registration
+
+    def _finalize_native(self):
+        """Spend remaining compute on the selected model, even after API exhaustion."""
+        if self.finalization_attempted or not self._native_best or not self.store.best:
+            return
+        response = self._native_best['response']
+        if (self.store.best['snapshot'] != self._native_best['snapshot'] or
+                response.get('fit_scope') != 'holdout_train' or
+                not response.get('manifest_path') or self.store.best.get('final')):
+            return
+        timeout = min(self.config.call_seconds, self.remaining() - 2)
+        if timeout < 30:
+            return
+        self.finalization_attempted = True
+        request = {'action': 'refit', 'manifest_path': response['manifest_path']}
+        result = self._backend(request, timeout)
+        refitted = result.get('response', {})
+        # Final equal-score replacement must describe this exact selected validation.
+        if (refitted.get('fit_scope') != 'full_train' or refitted.get('final') is not True or
+                any(refitted.get(key) != response.get(key) for key in
+                    ('score', 'metric', 'direction', 'validation_id'))):
+            self.journal('native_finalization_rejected', reason='incomplete_or_different_validation')
+            return
+        registration = self._accept_native_result(result)
+        self.journal('native_finalization', registration=registration)
 
     def _bootstrap(self):
         module = Path(__file__).resolve().with_name('ml_backend.py')
@@ -372,6 +450,8 @@ class Agent:
                 registration = self._accept_native_result(result)
                 if registration is None:
                     raise ValueError('native training returned no candidate')
+                result['registration'] = registration
+                self._remember_experiment('run_backend', {'request': {'action': action}}, result)
                 self.messages.append({'role': 'user', 'content':
                     'Native ML startup result (already evaluated and saved if better): ' +
                     redact(json.dumps({'response': response, 'registration': registration}, ensure_ascii=False))})
@@ -382,6 +462,7 @@ class Agent:
 
     def run(self, *, bootstrap=False):
         reason = 'step_limit'
+        cancelled = False
         previous_handler = None
         if threading.current_thread() is threading.main_thread():
             def on_sigterm(signum, frame):
@@ -398,6 +479,7 @@ class Agent:
                     raise ValueError('too many tool calls')
                 self.messages.append({'role': 'assistant', 'content': redact(message.content or ''),
                     **({'tool_calls': [c.model_dump(exclude_none=True) for c in calls]} if calls else {})})
+                assistant_message = self.messages[-1]
                 if not calls:
                     if self.store.best:
                         reason = 'completed'
@@ -410,6 +492,13 @@ class Agent:
                             raise ValueError('tool arguments too large')
                         args = json.loads(call.function.arguments, parse_constant=lambda x: (_ for _ in ()).throw(ValueError('nonfinite JSON')))
                         result = self.execute(call.function.name, args)
+                        if call.function.name == 'run_python' and result.get('experiment_path'):
+                            # Repeatedly retransmitting generated scripts wastes the paid context.
+                            # The exact source persists and can be read by the next child process.
+                            for saved_call in assistant_message.get('tool_calls', []):
+                                if saved_call['id'] == call.id:
+                                    saved_call['function']['arguments'] = json.dumps({
+                                        **args, 'code': '# Executed source saved at ' + result['experiment_path']})
                     except Exception as exc:
                         result = {'error': redact(str(exc))[:2000], 'type': type(exc).__name__}
                         self.journal('tool_error', tool=call.function.name, **result)
@@ -425,10 +514,19 @@ class Agent:
                     break
         except (Exception, KeyboardInterrupt) as exc:
             reason = type(exc).__name__
+            cancelled = isinstance(exc, KeyboardInterrupt)
             self.journal('stopped', reason=reason)
         finally:
-            if previous_handler is not None:
-                signal.signal(signal.SIGTERM, previous_handler)
+            try:
+                if not cancelled:
+                    self._finalize_native()
+            except (Exception, KeyboardInterrupt) as exc:
+                self.journal('native_finalization_error', error_type=type(exc).__name__)
+                if isinstance(exc, KeyboardInterrupt):
+                    reason = type(exc).__name__
+            finally:
+                if previous_handler is not None:
+                    signal.signal(signal.SIGTERM, previous_handler)
         if self.store.best:
             path = self.publish()
             self.journal('published', reason=reason, submission=str(path), best=self.store.best)
