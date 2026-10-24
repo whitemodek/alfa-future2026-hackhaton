@@ -570,6 +570,69 @@ def _refit_saved(envelope, started, budget, threads):
                 elapsed_seconds=round(time.monotonic() - started, 3))
 
 
+def _search(envelope, started, budget):
+    """Try nearby depths only when the first complete training run was cheap."""
+    request = dict(envelope['request'], action='experiment')
+    depth = max(3, min(9, int(request.get('depth', 6))))
+    request['depth'] = depth
+    margin = min(5, max(1, budget * .02))
+    first_budget = budget - (time.monotonic() - started) - margin
+    if first_budget < 1:
+        raise MLRequestError('Not enough time left for model search.')
+    best = run(dict(envelope, request=request, time_budget_seconds=first_budget))
+    best_depth = depth
+
+    def finite_score(result):
+        value = result.get('score')
+        return type(value) in (int, float) and math.isfinite(value)
+
+    def record(result, trial_depth, accepted, reason=None):
+        entry = dict(depth=trial_depth, accepted=accepted,
+                     elapsed_seconds=result.get('elapsed_seconds', 0))
+        if finite_score(result):
+            entry['score'] = result['score']
+        if reason:
+            entry['reason'] = reason
+        return entry
+
+    results = [record(best, depth, best.get('status') == 'ok')]
+    comparable = (best.get('status') == 'ok' and best.get('model') == 'catboost'
+                  and best.get('candidate_path') and finite_score(best)
+                  and best.get('direction') in {'maximize', 'minimize'}
+                  and best.get('metric') and best.get('validation_id'))
+    # A slow first run already used the useful training budget. Avoid shallow,
+    # undertrained follow-ups that could sacrifice final refit time.
+    if comparable and time.monotonic() - started <= budget / 6:
+        depths = list(dict.fromkeys(max(3, min(9, value)) for value in (depth - 2, depth + 2)))
+        depths = [value for value in depths if value != depth]
+        identity = {key: best[key] for key in ('metric', 'direction', 'validation_id')}
+        for index, trial_depth in enumerate(depths):
+            left = budget - (time.monotonic() - started) - margin
+            if left < 30:
+                break
+            trial_budget = left / (len(depths) - index)
+            if trial_budget < 30:
+                trial_budget = left
+            try:
+                trial = run(dict(envelope, request=dict(request, depth=trial_depth),
+                                 time_budget_seconds=trial_budget))
+                same_validation = all(trial.get(key) == value for key, value in identity.items())
+                valid = trial.get('status') == 'ok' and trial.get('candidate_path') and finite_score(trial)
+                better = valid and same_validation and (
+                    trial['score'] > best['score'] if identity['direction'] == 'maximize'
+                    else trial['score'] < best['score'])
+                if better:
+                    best, best_depth = trial, trial_depth
+                results.append(record(trial, trial_depth, bool(better),
+                                      'different_validation' if valid and not same_validation else None))
+            except Exception as exc:
+                results.append(dict(depth=trial_depth, accepted=False,
+                                    reason=type(exc).__name__))
+    result = dict(best, selected_depth=best_depth, search_results=results,
+                  elapsed_seconds=round(time.monotonic() - started, 3))
+    return result
+
+
 def run(envelope):
     started = time.monotonic()
     import numpy as np
@@ -578,7 +641,7 @@ def run(envelope):
     if not isinstance(request, dict):
         raise MLRequestError("request must be an object.")
     action = request.get("action", "experiment")
-    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit"}:
+    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit", "search"}:
         raise MLRequestError(f"Unsupported action: {action}")
     if not isinstance(request.get("refit", True), bool):
         raise MLRequestError("refit must be true or false.")
@@ -586,6 +649,8 @@ def run(envelope):
     if not math.isfinite(budget) or budget < 1:
         raise MLRequestError("time_budget_seconds must be finite and at least 1.")
     threads = max(1, min(8, int(envelope.get("threads", 1))))
+    if action == 'search':
+        return _search(envelope, started, budget)
     if action == 'refit':
         return _refit_saved(envelope, started, budget, threads)
     problem = load_problem(envelope)

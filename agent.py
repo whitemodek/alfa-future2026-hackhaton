@@ -333,6 +333,7 @@ class Agent:
             entry['request'] = shrink(json.dumps(args['request'], ensure_ascii=False), 700)
             entry.update({key: response[key] for key in (
                 'model', 'score', 'metric', 'direction', 'validation_id', 'fit_scope',
+                'selected_depth', 'selected_iterations',
                 'candidate_path', 'manifest_path') if key in response})
             validation = response.get('validation')
             if isinstance(validation, dict):
@@ -430,7 +431,7 @@ class Agent:
         if not module.is_file() or self.config.bootstrap_seconds == 0:
             return
         for action, allowance in (('baseline', self.config.bootstrap_seconds),
-                                  ('experiment', self.config.warmup_seconds)):
+                                  ('search', self.config.warmup_seconds)):
             if allowance == 0 or self.remaining() <= self.config.reserve_seconds + 5:
                 continue
             # Native ML runs use a modest fraction of short smoke-test budgets.

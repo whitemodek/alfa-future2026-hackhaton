@@ -17,9 +17,11 @@ run_python returns experiment_path with the saved executed source. Read or rerun
 instead of regenerating it; the conversation replaces executed code with its path. Status includes
 recent_experiments so results and settings survive context trimming. Reuse successful settings
 and avoid repeating experiments that already failed or lost on the same validation split.
-The bundled ml_backend.py supports inspect, baseline, experiment, train, finalize and refit actions
+The bundled ml_backend.py supports inspect, baseline, search, experiment, train, finalize and refit actions
 through run_backend. Startup normally registers a cheap baseline and a validated CatBoost
 candidate before your first request. Preserve the existing submission schema.
+search compares nearby depths only when its first training run is fast enough; it keeps
+the best candidate on the same validation split. Read search_results before repeating a trial.
 All successful run_backend training candidates are automatically validated and saved if better;
 check the returned registration field. register_candidate is needed for custom run_python outputs.
 Read startup results before training again. Use explicit paths, target, problem_type, metric, direction,
