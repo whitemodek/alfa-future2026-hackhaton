@@ -122,6 +122,7 @@ python pack_solution.py dist/solution.zip
 - [Контракт ML-модуля](docs/ML_CONTRACT.md)
 - [Проверки и результаты](QA_REPORT.md)
 - [Протокол экспериментов](docs/EXPERIMENTS.md)
+- [Независимый пилот на восьми публичных задачах](docs/TRANSFER_BENCHMARK.md)
 - [Формат отправки](docs/SUBMISSION.md)
 - [Границы безопасности](docs/SECURITY.md)
 - [Пояснение для команды и защиты, TXT](docs/PROJECT_EXPLANATION_RU.txt)
