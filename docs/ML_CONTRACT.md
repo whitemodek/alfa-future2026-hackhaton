@@ -82,6 +82,9 @@ XGBoost: `min_child_weight`, `encoding` (`native`/`onehot`). Регрессия 
 нули сохраняются. Категории обучаются только на train-fold, неизвестные категории
 не добавляются в словарь. LightGBM/XGBoost поддерживают `subsample`,
 `colsample_bytree`. `refit: false` отключает полное дообучение.
+Для `roc_auc`, `log_loss` и `average_precision`, включая `neg_`-варианты,
+допускается только `prediction_type=probability`. Явный запрос меток отклоняется
+до обучения: оценка по вероятностям должна соответствовать представлению в CSV.
 Разбиение: `validation_fraction` и `split` (auto/random/time/group).
 По умолчанию `auto` ищет явный переход теста в более поздние периоды среди
 временных признаков и выбирает полные последние периоды для holdout. При большом

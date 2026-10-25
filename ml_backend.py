@@ -251,6 +251,9 @@ def load_problem(envelope):
             prediction_type = "label"
     if prediction_type not in {"label", "probability"}:
         raise MLRequestError("prediction_type must be label or probability.")
+    if (problem_type == 'classification' and prediction_type != 'probability'
+            and metric.removeprefix('neg_') in {'roc_auc', 'log_loss', 'average_precision'}):
+        raise MLRequestError(f'Metric {metric} requires probability output; use prediction_type=probability.')
     if problem_type == "regression" and (prediction_type != "label" or len(output_columns) != 1):
         raise MLRequestError("Regression requires exactly one prediction column.")
     if classes is not None:

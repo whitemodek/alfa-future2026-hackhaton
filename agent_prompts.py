@@ -19,7 +19,7 @@ recent_experiments so results and settings survive context trimming. Reuse succe
 and avoid repeating experiments that already failed or lost on the same validation split.
 The bundled ml_backend.py supports inspect, baseline, portfolio, search, ensemble,
 experiment, train, finalize and refit actions
-through run_backend. Startup normally registers a cheap baseline and a validated CatBoost
+through run_backend. Startup normally registers a cheap baseline and a validated native
 candidate before your first request. Preserve the existing submission schema.
 search compares nearby depths only when its first training run is fast enough; it keeps
 the best candidate on the same validation split. Read search_results before repeating a trial.
