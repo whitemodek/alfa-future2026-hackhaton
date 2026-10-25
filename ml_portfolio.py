@@ -51,6 +51,13 @@ def improves(result, best):
                   else result['score'] < best['score']))))
 
 
+def checkpoint(envelope, best):
+    """Persist only a complete worker result before starting another trial."""
+    callback = envelope.get('_checkpoint_callback')
+    if callable(callback) and best.get('status') == 'ok' and best.get('candidate_path'):
+        callback(best)
+
+
 def _response(problem, model, candidate, schema, manifest_path, manifest, started, notes=''):
     result = dict(version=1, status='ok', candidate_path=str(candidate), schema=schema,
                   model=model, score=manifest['score'], metric=problem['metric'],
@@ -366,7 +373,7 @@ def run_portfolio(envelope, started, budget, threads):
     request = envelope['request']
     if not isinstance(request.get('seed_bagging', True), bool):
         raise b.MLRequestError('seed_bagging must be a boolean.')
-    for key in ('entity_history', 'extra_trees'):
+    for key in ('entity_history', 'entity_lag', 'extra_trees'):
         if not isinstance(request.get(key, True), bool):
             raise b.MLRequestError(key + ' must be a boolean.')
     families = request.get('families', ['catboost', 'lightgbm', 'xgboost'])
@@ -383,6 +390,11 @@ def run_portfolio(envelope, started, budget, threads):
         params = {k: v for k, v in request.items() if k not in {'families', 'manifest_paths', 'weights'}}
         params.update(action='search' if family == 'catboost' else 'experiment', model=family, refit=False)
         try:
+            if family == 'catboost' and 'depth' not in params:
+                # Start with the regression control that survived both temporal
+                # backtests. A busy CPU may disable neighbor search completely.
+                problem = b.load_problem(envelope)
+                params['depth'] = 8 if problem['classes'] is None else 6
             result = b.run(dict(envelope, request=params, time_budget_seconds=allowance))
             accepted = bool(improves(result, best))
             trials.append(dict(model=family, score=result.get('score'), accepted=accepted,
@@ -391,33 +403,13 @@ def run_portfolio(envelope, started, budget, threads):
                 candidates.append(result)
             if accepted or not best:
                 best = result
+                checkpoint(envelope, best)
         except Exception as exc:
             trials.append(dict(model=family, accepted=False, error=type(exc).__name__, message=str(exc)[:300]))
     if not best:
         left = max(1, budget - (time.monotonic() - started) - 1)
         best = b.run(dict(envelope, request=dict(request, action='baseline'), time_budget_seconds=left))
-    # Keep the original three-model schedule. An extra forest uses only time
-    # left after those controls and never takes their initial allocation.
-    if request.get('extra_trees', True) and 'families' not in request:
-        try:
-            problem = b.load_problem(envelope)
-            left = budget - (time.monotonic() - started) - min(20, budget * .1)
-            if problem['classes'] is not None and left > 15:
-                params = dict(request, action='experiment', model='extra_trees', refit=False)
-                # Boosting iteration/depth settings do not define a forest size.
-                for key in ('iterations', 'depth', 'learning_rate'):
-                    params.pop(key, None)
-                forest = b.run(dict(envelope, request=params, time_budget_seconds=left))
-                accepted = bool(improves(forest, best))
-                trials.append(dict(model='extra_trees', score=forest.get('score'), accepted=accepted,
-                                   selected_iterations=forest.get('selected_iterations')))
-                if finite_score(forest) and forest.get('manifest_path'):
-                    candidates.append(forest)
-                if accepted:
-                    best = forest
-        except Exception as exc:
-            trials.append(dict(model='extra_trees', accepted=False, error=type(exc).__name__,
-                               message=str(exc)[:300]))
+        checkpoint(envelope, best)
     if request.get('seed_bagging', True):
         try:
             bag = _try_seed_bag(envelope, candidates, started, budget, threads)
@@ -426,13 +418,16 @@ def run_portfolio(envelope, started, budget, threads):
                 trials.append(dict(model='regression_seed_bag', score=bag['score'], accepted=accepted))
                 if accepted:
                     best = bag
+                    checkpoint(envelope, best)
         except Exception as exc:
             trials.append(dict(model='regression_seed_bag', accepted=False, error=type(exc).__name__))
+    pair_seconds = 0.0
     if len(candidates) >= 2 and budget - (time.monotonic() - started) > 20:
         compatible = [r for r in candidates if all(r.get(k) == best.get(k)
                       for k in ('metric', 'direction', 'validation_id'))]
         compatible.sort(key=lambda r: r['score'], reverse=best.get('direction') == 'maximize')
         if len(compatible) >= 2:
+            pair_started = time.monotonic()
             try:
                 blended = run_ensemble(dict(envelope, request=dict(action='ensemble',
                     manifest_paths=[r['manifest_path'] for r in compatible[:2]])), started, budget, threads)
@@ -440,19 +435,61 @@ def run_portfolio(envelope, started, budget, threads):
                 trials.append(dict(model='ensemble', score=blended['score'], accepted=accepted))
                 if accepted:
                     best = blended
+                    checkpoint(envelope, best)
             except Exception as exc:
                 trials.append(dict(model='ensemble', accepted=False, error=type(exc).__name__))
-        if (len(compatible) >= 3 and any(r.get('model') == 'extra_trees' for r in compatible[:3])
-                and budget - (time.monotonic() - started) > 5):
+            finally:
+                pair_seconds = time.monotonic() - pair_started
+    # The established native ensemble is saved before optional work. A forest
+    # gets a small training allowance and leaves time for loading and prediction.
+    if request.get('extra_trees', True) and 'families' not in request:
+        try:
+            problem = b.load_problem(envelope)
+            left = budget - (time.monotonic() - started)
+            allowance = min(45.0, left - 60.0)
+            if problem['classes'] is not None and allowance >= 15:
+                params = dict(request, action='experiment', model='extra_trees', refit=False)
+                # Boosting iteration/depth settings do not define a forest size.
+                for key in ('iterations', 'depth', 'learning_rate'):
+                    params.pop(key, None)
+                forest = b.run(dict(envelope, request=params, time_budget_seconds=allowance))
+                accepted = bool(improves(forest, best))
+                trials.append(dict(model='extra_trees', score=forest.get('score'), accepted=accepted,
+                                   selected_iterations=forest.get('selected_iterations')))
+                if finite_score(forest) and forest.get('manifest_path'):
+                    candidates.append(forest)
+                if accepted:
+                    best = forest
+                    checkpoint(envelope, best)
+        except Exception as exc:
+            trials.append(dict(model='extra_trees', accepted=False, error=type(exc).__name__,
+                               message=str(exc)[:300]))
+    compatible = [r for r in candidates if all(r.get(k) == best.get(k)
+                  for k in ('metric', 'direction', 'validation_id'))]
+    boosting = [r for r in compatible if r.get('model') != 'extra_trees']
+    forests = [r for r in compatible if r.get('model') == 'extra_trees']
+    boosting.sort(key=lambda r: r['score'], reverse=best.get('direction') == 'maximize')
+    if forests and boosting:
+        forest = forests[0]
+        for count, label, floor in ((1, 'forest_pair_ensemble', 30),
+                                    (2, 'three_model_ensemble', 45)):
+            minimum = max(floor, pair_seconds * (count + 1) + 10)
+            if len(boosting) < count or budget - (time.monotonic() - started) < minimum:
+                continue
+            ensemble_started = time.monotonic()
             try:
                 blended = run_ensemble(dict(envelope, request=dict(action='ensemble',
-                    manifest_paths=[r['manifest_path'] for r in compatible[:3]])), started, budget, threads)
+                    manifest_paths=[r['manifest_path'] for r in boosting[:count]] +
+                                   [forest['manifest_path']])), started, budget, threads)
                 accepted = bool(improves(blended, best))
-                trials.append(dict(model='three_model_ensemble', score=blended['score'], accepted=accepted))
+                trials.append(dict(model=label, score=blended['score'], accepted=accepted))
                 if accepted:
                     best = blended
+                    checkpoint(envelope, best)
             except Exception as exc:
-                trials.append(dict(model='three_model_ensemble', accepted=False, error=type(exc).__name__))
+                trials.append(dict(model=label, accepted=False, error=type(exc).__name__))
+            finally:
+                pair_seconds = max(pair_seconds, time.monotonic() - ensemble_started)
     if request.get('entity_history', True) and finite_score(best) and best.get('model') != 'dummy':
         try:
             from ml_history import entity_columns, run_history
@@ -471,7 +508,23 @@ def run_portfolio(envelope, started, budget, threads):
                                    coverage=history['history_validation']['coverage']))
                 if accepted:
                     best = history
+                    checkpoint(envelope, best)
         except Exception as exc:
             trials.append(dict(model='history', accepted=False, error=type(exc).__name__,
+                               message=str(exc)[:300]))
+    if (best.get('model') == 'history' and request.get('entity_lag', True)
+            and budget - (time.monotonic() - started) >= 30):
+        try:
+            from ml_lag import run_lag
+            lag = run_lag(dict(envelope, request=dict(action='lag',
+                          manifest_path=best['manifest_path'])), started, budget, threads)
+            accepted = bool(improves(lag, best))
+            trials.append(dict(model='lag', score=lag['score'], accepted=accepted,
+                               selected_iterations=lag.get('selected_iterations')))
+            if accepted:
+                best = lag
+                checkpoint(envelope, best)
+        except Exception as exc:
+            trials.append(dict(model='lag', accepted=False, error=type(exc).__name__,
                                message=str(exc)[:300]))
     return dict(best, portfolio_results=trials, elapsed_seconds=round(time.monotonic() - started, 3))

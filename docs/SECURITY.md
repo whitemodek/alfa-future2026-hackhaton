@@ -1,8 +1,8 @@
 # Runtime security and failure boundaries
 
-This project owns the agent backend: provider calls, tool dispatch, process supervision,
-artifact validation, and recovery. Model quality and ML correctness belong to the ML
-implementation and are outside this backend's guarantees.
+This project includes provider calls, tool dispatch, process supervision, artifact
+validation, recovery and native tabular ML. Runtime checks establish explicit
+contracts; local validation does not guarantee generalization to hidden data.
 
 ## Trust model
 
@@ -16,7 +16,7 @@ the conversation. Run only on data permitted to be sent to that provider. Creden
 belong in environment variables, never task files, prompts, ZIP files, or Git.
 
 Native model bundles are local worker artifacts, not uploaded dependencies.
-LightGBM/XGBoost adapters use joblib for their own saved estimator/preprocessor;
+LightGBM/XGBoost/ExtraTrees adapters use joblib for their own saved estimator/preprocessor;
 only private artifact paths with matching hashes are loaded. This is not a safe
 format for arbitrary third-party files. Ensemble validation always uses original
 holdout models; full-data refits are used for test prediction only.
@@ -73,3 +73,18 @@ provider. These checks validate orchestration, not ML performance:
 
 Passing these checks does not prove model accuracy, prevent malicious generated code,
 or replace isolation and resource limits supplied by the execution platform.
+
+
+## Temporal features and completed checkpoints
+
+Entity history and lag pipelines use only strictly earlier training targets.
+Missing or ambiguous identities fall back to the base model. A structural
+signature is a hypothesis, not proof that two observations describe one entity.
+Holdout and full-data models stay separate. Configuration files, models, input
+hashes and original validation identity are checked before full refit.
+
+A checkpoint contains a completed candidate saved before a later experiment.
+Recovery after worker failure keeps the actual exit code and failure information
+in the journal and still validates the CSV through the ordinary artifact path.
+An unmarked failed response is not accepted. Checkpoints improve failure recovery;
+they do not provide a security boundary against malicious generated code.

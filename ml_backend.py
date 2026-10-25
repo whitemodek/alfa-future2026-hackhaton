@@ -526,6 +526,9 @@ def _refit_saved(envelope, started, budget, threads):
     if isinstance(manifest, dict) and manifest.get('model') == 'history':
         from ml_history import refit_history
         return refit_history(envelope, manifest, started, budget, threads)
+    if isinstance(manifest, dict) and manifest.get('model') == 'lag':
+        from ml_lag import refit_lag
+        return refit_lag(envelope, manifest, started, budget, threads)
     if (not isinstance(manifest, dict) or manifest.get('model') != 'catboost'
             or manifest.get('fit_scope') != 'holdout_train'
             or not isinstance(manifest.get('request'), dict)):
@@ -671,7 +674,7 @@ def run(envelope):
     if not isinstance(request, dict):
         raise MLRequestError("request must be an object.")
     action = request.get("action", "experiment")
-    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit", "search", "portfolio", "ensemble", "history"}:
+    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit", "search", "portfolio", "ensemble", "history", "lag"}:
         raise MLRequestError(f"Unsupported action: {action}")
     if not isinstance(request.get("refit", True), bool):
         raise MLRequestError("refit must be true or false.")
@@ -691,6 +694,9 @@ def run(envelope):
     if action == 'history':
         from ml_history import run_history
         return run_history(envelope, started, budget, threads)
+    if action == 'lag':
+        from ml_lag import run_lag
+        return run_lag(envelope, started, budget, threads)
     if action == 'search':
         return _search(envelope, started, budget)
     if action == 'refit':
@@ -886,6 +892,20 @@ def main(argv=None):
         print("Usage: ml_backend.py REQUEST.json RESPONSE.json", file=sys.stderr)
         return 2
     request_path, response_path = map(Path, argv)
+    latest = None
+
+    def save_checkpoint(response):
+        nonlocal latest
+        if not isinstance(response, dict) or response.get('status') != 'ok' or not response.get('candidate_path'):
+            raise MLRequestError('A checkpoint must contain a completed candidate.')
+        # Write then replace: termination must leave either the previous whole
+        # JSON or the new whole JSON, never a partially serialized response.
+        saved = dict(response, checkpoint=True)
+        temporary = response_path.with_suffix(response_path.suffix + '.tmp')
+        temporary.write_text(json.dumps(saved, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+        temporary.replace(response_path)
+        latest = saved
+
     try:
         envelope = json.loads(request_path.read_text(encoding="utf-8-sig"))
         if envelope.get("version", 1) != 1:
@@ -894,10 +914,14 @@ def main(argv=None):
         threads = max(1, min(8, int(envelope.get("threads", 1))))
         for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
             os.environ[variable] = str(threads)
+        envelope['_checkpoint_callback'] = save_checkpoint
         result = run(envelope)
     except Exception as exc:
-        result = dict(version=1, status="error", error=f"{type(exc).__name__}: {str(exc)[:1500]}")
-    response_path.write_text(json.dumps(result, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+        result = (dict(latest, checkpoint_reason=type(exc).__name__) if latest is not None else
+                  dict(version=1, status="error", error=f"{type(exc).__name__}: {str(exc)[:1500]}"))
+    temporary = response_path.with_suffix(response_path.suffix + '.tmp')
+    temporary.write_text(json.dumps(result, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    temporary.replace(response_path)
     return 0 if result["status"] == "ok" else 1
 
 

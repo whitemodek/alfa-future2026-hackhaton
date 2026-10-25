@@ -386,6 +386,11 @@ class Agent:
             if not isinstance(response, dict):
                 raise ValueError('backend response must be an object')
             result['response'] = response
+            if (result.get('exit_code') != 0 and response.get('checkpoint') is True
+                    and response.get('status') == 'ok' and response.get('candidate_path')):
+                # The worker stopped in a later trial. Keep its real exit code
+                # and limits in the journal; normal CSV validation still applies.
+                result['checkpoint_recovered'] = True
         elif result['exit_code'] == 0:
             result['error'] = 'backend did not write response JSON'
         self.journal('backend', result=result)
@@ -393,7 +398,8 @@ class Agent:
 
     def _accept_native_result(self, result):
         response = result.get('response', {})
-        if (result.get('exit_code') != 0 or response.get('status') != 'ok'
+        if ((result.get('exit_code') != 0 and result.get('checkpoint_recovered') is not True)
+                or response.get('status') != 'ok'
                 or not response.get('candidate_path')):
             return None
         if not self.configured:
@@ -448,7 +454,8 @@ class Agent:
             try:
                 result = self._backend({'action': action}, timeout)
                 response = result.get('response', {})
-                if result.get('exit_code') != 0 or response.get('status') != 'ok':
+                if ((result.get('exit_code') != 0 and result.get('checkpoint_recovered') is not True)
+                        or response.get('status') != 'ok'):
                     self.journal('bootstrap_error', action=action,
                                  error_type=response.get('error_type', 'backend_failed'))
                     if not self.store.best:

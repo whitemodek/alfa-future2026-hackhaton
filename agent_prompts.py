@@ -18,14 +18,15 @@ instead of regenerating it; the conversation replaces executed code with its pat
 recent_experiments so results and settings survive context trimming. Reuse successful settings
 and avoid repeating experiments that already failed or lost on the same validation split.
 The bundled ml_backend.py supports inspect, baseline, portfolio, search, ensemble,
-experiment, train, finalize, history and refit actions
+experiment, train, finalize, history, lag and refit actions
 through run_backend. Startup normally registers a cheap baseline and a validated native
 candidate before your first request. Preserve the existing submission schema.
 search compares nearby depths only when its first training run is fast enough; it keeps
 the best candidate on the same validation split. Read search_results before repeating a trial.
 Startup portfolio compares CatBoost, LightGBM and XGBoost within one compute budget,
-then considers a fixed ensemble. Read portfolio_results before repeating those trials.
-Use model=catboost/lightgbm/xgboost for an individual experiment. Ensemble takes
+then considers a fixed ensemble and a bounded optional ExtraTrees classifier.
+Read portfolio_results before repeating those trials.
+Use model=catboost/lightgbm/xgboost/extra_trees for an individual experiment. Ensemble takes
 manifest_paths (2 or 3 compatible native manifests) and optional positive weights.
 For regression, a cheap extra seed may enter a predefined bag; never promote a seed
 only because it won one validation slice. Preserve categorical preprocessing in saved models.
@@ -34,6 +35,9 @@ strictly earlier entity targets. Pass entity_columns for a justified stable sign
 manifest_path for its base. Missing and ambiguous keys use the base model. The portfolio
 may consider a conservative structural building signature automatically; it is a heuristic,
 not a verified entity ID. Read its coverage and validation score; entity_history=false disables it.
+The optional lag action takes a history manifest_path. It adds strictly causal past-target
+features to a separate XGBoost model and tests a fixed50/50 blend with the history pipeline.
+Own-period and future labels never enter training features. entity_lag=false disables this trial.
 All successful run_backend training candidates are automatically validated and saved if better;
 check the returned registration field. register_candidate is needed for custom run_python outputs.
 Read startup results before training again. Use explicit paths, target, problem_type, metric, direction,

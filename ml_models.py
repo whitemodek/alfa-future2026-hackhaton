@@ -330,7 +330,7 @@ def fit(family, x_train, y_train, x_valid, y_valid, categorical, request,
             raise ValueError('extra_trees currently supports classification only')
         if request.get('encoding', 'onehot') != 'onehot':
             raise ValueError('extra_trees requires onehot encoding')
-        rounds = _number(request, 'iterations', 300, 1, 1000, True)
+        rounds = _number(request, 'iterations', 100, 1, 1000, True)
         weighting = request.get('auto_class_weights', 'SqrtBalanced' if metric.removeprefix('neg_') in {
             'macro_f1', 'balanced_accuracy'} else 'None')
         if weighting not in {'None', 'Balanced', 'SqrtBalanced'}:
