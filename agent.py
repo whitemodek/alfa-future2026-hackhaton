@@ -336,6 +336,12 @@ class Agent:
                 'selected_depth', 'selected_iterations',
                 'candidate_path', 'manifest_path') if key in response})
             validation = response.get('validation')
+            portfolio = response.get('portfolio_results')
+            if isinstance(portfolio, list):
+                entry['portfolio_results'] = [
+                    {key: shrink(str(trial[key]), 150) if isinstance(trial[key], str) else trial[key]
+                     for key in ('model', 'score', 'accepted', 'error') if key in trial}
+                    for trial in portfolio[:6] if isinstance(trial, dict)]
             if isinstance(validation, dict):
                 entry['validation'] = {key: shrink(str(validation[key]), 300) for key in
                                        ('strategy', 'rationale') if key in validation}
@@ -431,7 +437,7 @@ class Agent:
         if not module.is_file() or self.config.bootstrap_seconds == 0:
             return
         for action, allowance in (('baseline', self.config.bootstrap_seconds),
-                                  ('search', self.config.warmup_seconds)):
+                                  ('portfolio', self.config.warmup_seconds)):
             if allowance == 0 or self.remaining() <= self.config.reserve_seconds + 5:
                 continue
             # Native ML runs use a modest fraction of short smoke-test budgets.

@@ -496,6 +496,12 @@ def _refit_saved(envelope, started, budget, threads):
         raise MLRequestError('Refit manifest must be a bounded regular file inside .ml-artifacts.')
     manifest = json.loads(path.read_text(encoding='utf-8'),
                           parse_constant=lambda value: (_ for _ in ()).throw(MLRequestError('Nonfinite manifest')))
+    if isinstance(manifest, dict) and manifest.get('model') in {'lightgbm', 'xgboost'}:
+        from ml_portfolio import refit_single
+        return refit_single(envelope, manifest, started, budget, threads)
+    if isinstance(manifest, dict) and manifest.get('model') == 'ensemble':
+        from ml_portfolio import refit_ensemble
+        return refit_ensemble(envelope, manifest, started, budget, threads)
     if (not isinstance(manifest, dict) or manifest.get('model') != 'catboost'
             or manifest.get('fit_scope') != 'holdout_train'
             or not isinstance(manifest.get('request'), dict)):
@@ -536,7 +542,7 @@ def _refit_saved(envelope, started, budget, threads):
     if not isinstance(saved_parameters, dict) or saved_parameters.get('iterations') != count:
         raise MLRequestError('Refit manifest is missing selected training parameters.')
     stored = selected_model.get_params()
-    keys = ('depth', 'learning_rate', 'loss_function', 'random_seed', 'auto_class_weights')
+    keys = ('depth', 'learning_rate', 'loss_function', 'random_seed', 'auto_class_weights', 'l2_leaf_reg')
     if any(saved_parameters.get(key) != stored.get(key) for key in keys):
         raise MLRequestError('Refit parameters differ from the selected model.')
     # Only gradient-affecting saved settings cross into the final fit. No paths,
@@ -641,7 +647,7 @@ def run(envelope):
     if not isinstance(request, dict):
         raise MLRequestError("request must be an object.")
     action = request.get("action", "experiment")
-    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit", "search"}:
+    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit", "search", "portfolio", "ensemble"}:
         raise MLRequestError(f"Unsupported action: {action}")
     if not isinstance(request.get("refit", True), bool):
         raise MLRequestError("refit must be true or false.")
@@ -649,10 +655,22 @@ def run(envelope):
     if not math.isfinite(budget) or budget < 1:
         raise MLRequestError("time_budget_seconds must be finite and at least 1.")
     threads = max(1, min(8, int(envelope.get("threads", 1))))
+    family = request.get('model', 'catboost')
+    if family not in {'catboost', 'lightgbm', 'xgboost'}:
+        raise MLRequestError('model must be catboost, lightgbm or xgboost.')
+    if action == 'portfolio':
+        from ml_portfolio import run_portfolio
+        return run_portfolio(envelope, started, budget, threads)
+    if action == 'ensemble':
+        from ml_portfolio import run_ensemble
+        return run_ensemble(envelope, started, budget, threads)
     if action == 'search':
         return _search(envelope, started, budget)
     if action == 'refit':
         return _refit_saved(envelope, started, budget, threads)
+    if family != 'catboost' and action in {'experiment', 'train', 'finalize'}:
+        from ml_portfolio import run_single
+        return run_single(envelope, started, budget, threads)
     problem = load_problem(envelope)
     # Choose the validation policy before baseline registration fixes its identity.
     train_i, valid_i = _split(problem, request)
@@ -695,6 +713,7 @@ def run(envelope):
     chosen, model_path = "dummy", None
     selected_iterations, training_parameters = None, None
     fit_scope, training_rows = "full_train", len(y)
+    validation_model_path = validation_path = validation_hash = None
     baseline_path = str(path)
     remaining = budget - (time.monotonic() - started)
     if action != "baseline" and train_i is not None and remaining >= 3 and (not classification or len(problem["classes"]) > 1):
@@ -711,6 +730,14 @@ def run(envelope):
             parameters = dict(iterations=iterations, depth=depth, learning_rate=learning_rate,
                               loss_function=loss, thread_count=threads, random_seed=int(request.get("random_seed", 42)),
                               verbose=False, allow_writing_files=False, cat_features=categorical)
+            patience = request.get('early_stopping_rounds', 100 if not classification else 60)
+            if type(patience) is not int or not 1 <= patience <= 300:
+                raise MLRequestError('early_stopping_rounds must be an integer between 1 and 300.')
+            regularization = request.get('l2_leaf_reg', request.get('reg_lambda', 3))
+            if (type(regularization) not in (int, float) or not math.isfinite(regularization)
+                    or not 0 <= regularization <= 1000):
+                raise MLRequestError('l2_leaf_reg must be finite between 0 and 1000.')
+            parameters['l2_leaf_reg'] = regularization
             if classification:
                 weighting = request.get("auto_class_weights", "SqrtBalanced" if problem["metric"].removeprefix("neg_") in {
                     "macro_f1", "balanced_accuracy"} else "None")
@@ -733,7 +760,7 @@ def run(envelope):
             validation_share = 0.35 if request.get("refit", True) else 1.0
             validation_deadline = fit_started + max(1, available * validation_share)
             model.fit(x.iloc[train_i], y.iloc[train_i], eval_set=(x.iloc[valid_i], y.iloc[valid_i]),
-                      early_stopping_rounds=60, use_best_model=not bool(evaluation),
+                      early_stopping_rounds=patience, use_best_model=not bool(evaluation),
                       callbacks=[_DeadlineCallback(validation_deadline)])
             if evaluation:
                 # Smooth training loss controls patience. Macro F1 can plateau
@@ -762,6 +789,9 @@ def run(envelope):
                 fit_scope, training_rows = "holdout_train", len(train_i)
                 model_path = path.with_suffix(".cbm")
                 model.save_model(str(model_path))
+                validation_model_path = str(model_path)
+                from ml_portfolio import save_validation
+                validation_path, validation_hash = save_validation(path, learned_prediction, learned_probability)
                 left = budget - (time.monotonic() - started) - output_margin
                 estimate = validation_time * len(y) / len(train_i)
                 if not request.get("refit", True):
@@ -802,6 +832,9 @@ def run(envelope):
                 "selected_iterations": selected_iterations, "training_parameters": training_parameters,
                 "input_hashes": _input_hashes(problem),
                 "model_sha256": _file_hash(model_path) if model_path else None,
+                "validation_model_path": validation_model_path,
+                "validation_model_sha256": _file_hash(validation_model_path) if validation_model_path else None,
+                "validation_path": validation_path, "validation_sha256": validation_hash,
                 "model_path": str(model_path) if model_path else None}
     manifest_path = path.with_suffix(".json")
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, allow_nan=False, indent=2), encoding="utf-8")

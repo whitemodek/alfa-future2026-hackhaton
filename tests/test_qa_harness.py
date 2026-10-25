@@ -79,6 +79,24 @@ time.sleep(60)
             _extract(archive, self.root / 'extract')
         self.assertFalse((self.root / 'escape.py').exists())
 
+    def test_platform_runs_code_and_task_in_same_directory(self):
+        source = """import sys
+from pathlib import Path
+assert sys.argv[1] == 'task.md'
+assert Path.cwd() == Path(__file__).parent
+assert Path('task.md').is_file()
+assert not Path('ignored.csv').exists()
+Path('submission.csv').write_text('id,prediction\\na,0.2\\nb,0.8\\n')
+"""
+        archive = self.root / 'colocated.zip'
+        with zipfile.ZipFile(archive, 'w') as output:
+            output.writestr('solution.py', source)
+            output.writestr('ignored.csv', 'not copied by platform')
+        result = run_task(archive, self.task, 10)
+        self.work_dirs.append(result['work_dir'])
+        self.assertTrue(result['success'], result)
+        self.assertEqual(result['check']['metric'], {'rmse': 0.0})
+
     def test_zip_rejects_windows_filename_aliases_on_every_platform(self):
         for alias in ('SOLUTION.PY', 'solution.py.', 'solution.py '):
             with self.subTest(alias=alias):

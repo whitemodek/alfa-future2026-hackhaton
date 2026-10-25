@@ -88,10 +88,18 @@ def run_task(zip_path, task_dir, limit_seconds):
     _extract(zip_path, code_dir)
     # A previous local run must never make an unsuccessful run look successful.
     shutil.copytree(task_dir, data_dir, ignore=shutil.ignore_patterns('submission.csv', '.agent-*'))
-    command = [part.format(python=sys.executable, task_md=str(data_dir / 'task.md')) for part in COMMAND]
+    # The platform copies only root Python modules and requirements.txt into the
+    # task directory, then runs `python3 solution.py task.md` from that folder.
+    for source in code_dir.iterdir():
+        if source.suffix == '.py' or source.name == 'requirements.txt':
+            target = data_dir / source.name
+            if target.exists() and target.read_bytes() != source.read_bytes():
+                raise ValueError('Solution module collides with an input task file: ' + source.name)
+            shutil.copy2(source, target)
+    command = [part.format(python=sys.executable, task_md='task.md') for part in COMMAND]
     options = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
     started = time.monotonic()
-    process = subprocess.Popen(command, cwd=code_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
+    process = subprocess.Popen(command, cwd=data_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
     out, err = deque(maxlen=LOG_LIMIT // 4096), deque(maxlen=LOG_LIMIT // 4096)
     readers = [threading.Thread(target=_drain, args=(stream, chunks), daemon=True)
                for stream, chunks in ((process.stdout, out), (process.stderr, err))]
