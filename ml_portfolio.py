@@ -212,12 +212,15 @@ def _load_model(manifest, root, validation=False):
 def _blend(problem, models, weights, x):
     import numpy as np
     import ml_backend as b
+    frames = x if isinstance(x, list) else [x] * len(models)
+    if len(frames) != len(models):
+        raise b.MLRequestError('Every ensemble component needs its own input frame.')
     if problem['classes'] is not None:
-        probability = sum(w * b._aligned_proba(m, x, len(problem['classes']))
-                          for w, m in zip(weights, models))
+        probability = sum(w * b._aligned_proba(m, frame, len(problem['classes']))
+                          for w, m, frame in zip(weights, models, frames))
         return np.argmax(probability, axis=1), probability
-    return sum(w * np.asarray(m.predict(x)).reshape(-1)
-               for w, m in zip(weights, models)), None
+    return sum(w * np.asarray(m.predict(frame)).reshape(-1)
+               for w, m, frame in zip(weights, models, frames)), None
 
 
 def run_ensemble(envelope, started, budget, threads):
@@ -237,6 +240,7 @@ def run_ensemble(envelope, started, budget, threads):
     weights /= weights.max()  # Avoid overflow for valid large finite inputs.
     weights /= weights.sum()
     components, models, validation_models = [], [], []
+    validation_frames, test_frames = [], []
     problem = train_i = valid_i = None
     for index, value in enumerate(paths):
         _check_time(started, budget, 1)
@@ -249,21 +253,25 @@ def run_ensemble(envelope, started, budget, threads):
             raise b.MLRequestError('Ensemble components must use identical data, targets and validation.')
         models.append(_load_model(manifest, root))
         validation_models.append(_load_model(manifest, root, validation=True))
+        # Representation is part of each model's saved request. A shared raw
+        # feature list does not mean that numeric/categorical conversions match.
+        component_x, component_test_x, _ = b._features(p)
+        validation_frames.append(component_x.iloc[vi])
+        test_frames.append(component_test_x)
         components.append(dict(manifest_path=str(path), manifest_sha256=b._file_hash(path),
                                weight=float(weights[index]), manifest=manifest))
-    x, test_x, _ = b._features(problem)
     # Always use the saved HOLDOUT models for scoring, even if test predictions
     # use full-data refits. Scoring full refits on these rows would leak labels.
-    for model, component in zip(validation_models, components):
+    for model, component, frame in zip(validation_models, components, validation_frames):
         _check_time(started, budget, 1)
-        p, prob = _blend(problem, [model], [1.0], x.iloc[valid_i])
+        p, prob = _blend(problem, [model], [1.0], frame)
         actual = b._score(problem, problem['y'].iloc[valid_i], p, prob)
         if actual is None or not math.isclose(actual, component['manifest']['score'], rel_tol=1e-10, abs_tol=1e-10):
             raise b.MLRequestError('Component does not reproduce its saved holdout score.')
-    prediction, probability = _blend(problem, validation_models, weights, x.iloc[valid_i])
+    prediction, probability = _blend(problem, validation_models, weights, validation_frames)
     score = b._score(problem, problem['y'].iloc[valid_i], prediction, probability)
     _check_time(started, budget, 1)
-    test_prediction, test_probability = _blend(problem, models, weights, test_x)
+    test_prediction, test_probability = _blend(problem, models, weights, test_frames)
     _check_time(started, budget)
     candidate, schema = b._output(problem, test_prediction, test_probability, components[0]['manifest']['request'])
     full = all(c['manifest']['fit_scope'] == 'full_train' for c in components)
@@ -272,7 +280,7 @@ def run_ensemble(envelope, started, budget, threads):
                     metric=problem['metric'], direction=problem['direction'], score=score,
                     validation_id=b._validation_id(problem, train_i, valid_i), validation=problem['validation'],
                     input_hashes=b._input_hashes(problem), fit_scope='full_train' if full else 'holdout_train',
-                    training_rows=len(x) if full else len(train_i),
+                    training_rows=len(problem['y']) if full else len(train_i),
                     components=[{k: v for k, v in c.items() if k != 'manifest'} for c in components])
     manifest_path = candidate.with_suffix('.json')
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, allow_nan=False, indent=2), encoding='utf-8')
@@ -287,14 +295,19 @@ def refit_ensemble(envelope, manifest, started, budget, threads):
     components = manifest.get('components')
     if not isinstance(components, list) or not 2 <= len(components) <= 3:
         raise b.MLRequestError('Invalid ensemble components.')
-    paths, weights = [], []
-    for index, component in enumerate(components):
+    pending = []
+    for component in components:
+        _check_time(started, budget)
         path, part = read_manifest(component.get('manifest_path'), problem['root'])
         if b._file_hash(path) != component.get('manifest_sha256'):
             raise b.MLRequestError('Ensemble component manifest changed.')
+        pending.append((component, path, part))
+    paths, weights = [], []
+    for index, (component, path, part) in enumerate(pending):
         if part.get('fit_scope') != 'full_train':
             left = budget - (time.monotonic() - started) - min(20, budget * .1)
-            allowance = left / (len(components) - index)
+            remaining_fits = sum(p.get('fit_scope') != 'full_train' for _, _, p in pending[index:])
+            allowance = left / remaining_fits
             if allowance < 2:
                 raise b.MLRequestError('Insufficient time to refit every ensemble component.')
             result = b.run(dict(envelope, request=dict(action='refit', manifest_path=str(path)),
