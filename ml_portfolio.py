@@ -199,7 +199,7 @@ def _load_model(manifest, root, validation=False):
         from catboost import CatBoostClassifier, CatBoostRegressor
         model = CatBoostClassifier() if manifest['classes'] is not None else CatBoostRegressor()
         model.load_model(str(path))
-    elif manifest.get('model') in {'lightgbm', 'xgboost'}:
+    elif manifest.get('model') in {'lightgbm', 'xgboost', 'extra_trees'}:
         from ml_models import ModelAdapter
         model = ModelAdapter.load_model(path)
     else:
@@ -366,10 +366,13 @@ def run_portfolio(envelope, started, budget, threads):
     request = envelope['request']
     if not isinstance(request.get('seed_bagging', True), bool):
         raise b.MLRequestError('seed_bagging must be a boolean.')
+    for key in ('entity_history', 'extra_trees'):
+        if not isinstance(request.get(key, True), bool):
+            raise b.MLRequestError(key + ' must be a boolean.')
     families = request.get('families', ['catboost', 'lightgbm', 'xgboost'])
-    if (not isinstance(families, list) or not families or len(families) > 3
+    if (not isinstance(families, list) or not families or len(families) > 4
             or len(set(families)) != len(families)
-            or any(f not in {'catboost', 'lightgbm', 'xgboost'} for f in families)):
+            or any(f not in {'catboost', 'lightgbm', 'xgboost', 'extra_trees'} for f in families)):
         raise b.MLRequestError('families must list distinct supported native models.')
     best, candidates, trials = {}, [], []
     for index, family in enumerate(families):
@@ -393,6 +396,28 @@ def run_portfolio(envelope, started, budget, threads):
     if not best:
         left = max(1, budget - (time.monotonic() - started) - 1)
         best = b.run(dict(envelope, request=dict(request, action='baseline'), time_budget_seconds=left))
+    # Keep the original three-model schedule. An extra forest uses only time
+    # left after those controls and never takes their initial allocation.
+    if request.get('extra_trees', True) and 'families' not in request:
+        try:
+            problem = b.load_problem(envelope)
+            left = budget - (time.monotonic() - started) - min(20, budget * .1)
+            if problem['classes'] is not None and left > 15:
+                params = dict(request, action='experiment', model='extra_trees', refit=False)
+                # Boosting iteration/depth settings do not define a forest size.
+                for key in ('iterations', 'depth', 'learning_rate'):
+                    params.pop(key, None)
+                forest = b.run(dict(envelope, request=params, time_budget_seconds=left))
+                accepted = bool(improves(forest, best))
+                trials.append(dict(model='extra_trees', score=forest.get('score'), accepted=accepted,
+                                   selected_iterations=forest.get('selected_iterations')))
+                if finite_score(forest) and forest.get('manifest_path'):
+                    candidates.append(forest)
+                if accepted:
+                    best = forest
+        except Exception as exc:
+            trials.append(dict(model='extra_trees', accepted=False, error=type(exc).__name__,
+                               message=str(exc)[:300]))
     if request.get('seed_bagging', True):
         try:
             bag = _try_seed_bag(envelope, candidates, started, budget, threads)
@@ -417,4 +442,36 @@ def run_portfolio(envelope, started, budget, threads):
                     best = blended
             except Exception as exc:
                 trials.append(dict(model='ensemble', accepted=False, error=type(exc).__name__))
+        if (len(compatible) >= 3 and any(r.get('model') == 'extra_trees' for r in compatible[:3])
+                and budget - (time.monotonic() - started) > 5):
+            try:
+                blended = run_ensemble(dict(envelope, request=dict(action='ensemble',
+                    manifest_paths=[r['manifest_path'] for r in compatible[:3]])), started, budget, threads)
+                accepted = bool(improves(blended, best))
+                trials.append(dict(model='three_model_ensemble', score=blended['score'], accepted=accepted))
+                if accepted:
+                    best = blended
+            except Exception as exc:
+                trials.append(dict(model='three_model_ensemble', accepted=False, error=type(exc).__name__))
+    if request.get('entity_history', True) and finite_score(best) and best.get('model') != 'dummy':
+        try:
+            from ml_history import entity_columns, run_history
+            problem = b.load_problem(envelope)
+            b._split(problem, request)
+            if (problem['classes'] is None and problem['validation']['strategy'] == 'time'
+                    and entity_columns(problem, request)[0]):
+                history_request = dict(action='history', manifest_path=best['manifest_path'])
+                for key in ('entity_columns', 'history_weight'):
+                    if key in request:
+                        history_request[key] = request[key]
+                history = run_history(dict(envelope, request=history_request), started, budget, threads)
+                accepted = bool(improves(history, best))
+                trials.append(dict(model='history', score=history['score'], accepted=accepted,
+                                   entity_columns=history['entity_columns'],
+                                   coverage=history['history_validation']['coverage']))
+                if accepted:
+                    best = history
+        except Exception as exc:
+            trials.append(dict(model='history', accepted=False, error=type(exc).__name__,
+                               message=str(exc)[:300]))
     return dict(best, portfolio_results=trials, elapsed_seconds=round(time.monotonic() - started, 3))

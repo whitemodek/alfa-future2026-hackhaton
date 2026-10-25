@@ -43,6 +43,7 @@ class ModelAdapter:
         self.tree_count_ = 0
         self.model = None
         self.encoder = None
+        self.imputer = None
 
     def _transform(self, frame):
         import numpy as np
@@ -51,11 +52,15 @@ class ModelAdapter:
             raise ValueError('Prediction features differ from training')
         if self.parameters.get('encoding') == 'onehot':
             numeric = [name for name in self.feature_names_ if name not in self.categorical]
-            width = len(numeric) + sum(len(values) for values in self.vocabulary.values())
+            imputer = getattr(self, 'imputer', None)
+            indicators = len(imputer.indicator_.features_) if imputer is not None else 0
+            width = len(numeric) + indicators + sum(len(values) for values in self.vocabulary.values())
             if len(frame) * width > MAX_DENSE_CELLS:
                 raise ValueError('Dense one-hot expansion exceeds the 50-million-cell limit')
             number = frame[numeric].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=np.float32)
             number[~np.isfinite(number)] = np.nan
+            if imputer is not None:
+                number = imputer.transform(number)
             if self.encoder is None:
                 return number
             category = self.encoder.transform(frame[self.categorical].fillna('__MISSING__').astype(str))
@@ -76,6 +81,8 @@ class ModelAdapter:
 
     def _raw_predict(self, frame):
         transformed = self._transform(frame)
+        if self.family == 'extra_trees':
+            return self.model.predict_proba(transformed)
         if self.family == 'lightgbm':
             return self.model.predict(transformed, num_iteration=self.tree_count_,
                                       num_threads=self.threads)
@@ -103,7 +110,7 @@ class ModelAdapter:
     def load_model(cls, path):
         import joblib
         model = joblib.load(Path(path))
-        if not isinstance(model, cls) or model.family not in {'lightgbm', 'xgboost'}:
+        if not isinstance(model, cls) or model.family not in {'lightgbm', 'xgboost', 'extra_trees'}:
             raise ValueError('Invalid model adapter bundle')
         return model
 
@@ -124,6 +131,9 @@ class ModelAdapter:
         valid = self._transform(valid_x) if valid_x is not None else None
         weights = _sample_weights(y, self.parameters['weighting']) if self.classes_ is not None else None
         parameters = dict(self.parameters['native'])
+        if self.family == 'extra_trees':
+            self._train_extra_trees(train_x, y, weights, rounds, deadline)
+            return
         history = {}
         higher = _higher(self.metric)
 
@@ -184,6 +194,36 @@ class ModelAdapter:
         if chosen < 1:
             raise TimeoutError('No complete model iteration was trained')
         self.tree_count_ = int(chosen)
+
+    def _train_extra_trees(self, train_x, y, weights, rounds, deadline):
+        """Stop between complete batches; refit verifies the exact selected count."""
+        from sklearn.ensemble import ExtraTreesClassifier
+        _check_deadline(deadline)
+        model = ExtraTreesClassifier(**self.parameters['native'], n_estimators=1,
+                                     warm_start=True, n_jobs=self.threads)
+        completed = 0
+        seconds_per_tree = None
+        while completed < rounds:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            batch = min(10 if completed else 1, rounds - completed)
+            if seconds_per_tree is not None:
+                # Account for fit overhead and variation in individual tree size.
+                affordable = int(remaining / max(seconds_per_tree * 1.5, .001))
+                if affordable < 1:
+                    break
+                batch = min(batch, affordable)
+            started = time.monotonic()
+            model.set_params(n_estimators=completed + batch)
+            model.fit(train_x, y, sample_weight=weights)
+            elapsed = time.monotonic() - started
+            seconds_per_tree = max(elapsed / batch, seconds_per_tree or 0)
+            completed = len(model.estimators_)
+        if not completed:
+            raise TimeoutError('No complete ExtraTrees batch was trained')
+        self.model = model
+        self.tree_count_ = completed
 
 
 def _probability(raw, count):
@@ -252,6 +292,18 @@ def _adapter(family, x, y, categorical, parameters, problem_type, metric, thread
             from sklearn.preprocessing import OneHotEncoder
             adapter.encoder = OneHotEncoder(handle_unknown='ignore', sparse_output=False, dtype=np.float32)
             adapter.encoder.fit(x[categorical].fillna('__MISSING__').astype(str))
+        if family == 'extra_trees':
+            from sklearn.impute import SimpleImputer
+            numeric = [name for name in x.columns if name not in categorical]
+            if numeric:
+                import pandas as pd
+                number = x[numeric].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=np.float32)
+                number[~np.isfinite(number)] = np.nan
+                indicators = int(np.isnan(number).any(axis=0).sum())
+                if len(x) * (width + indicators) > MAX_DENSE_CELLS:
+                    raise ValueError('Dense one-hot expansion exceeds the 50-million-cell limit')
+                adapter.imputer = SimpleImputer(strategy='median', add_indicator=True,
+                                                 keep_empty_features=True).fit(number)
     return adapter
 
 
@@ -259,8 +311,8 @@ def fit(family, x_train, y_train, x_valid, y_valid, categorical, request,
         deadline, threads, problem_type, metric):
     """Fit on one pinned fold; custom primary scoring never controls patience."""
     _check_deadline(deadline)
-    if family not in {'lightgbm', 'xgboost'}:
-        raise ValueError('family must be lightgbm or xgboost')
+    if family not in {'lightgbm', 'xgboost', 'extra_trees'}:
+        raise ValueError('family must be lightgbm, xgboost or extra_trees')
     if problem_type not in {'classification', 'regression'}:
         raise ValueError('Unknown problem type')
     if not isinstance(request, dict) or any(name not in x_train for name in categorical):
@@ -273,6 +325,24 @@ def fit(family, x_train, y_train, x_valid, y_valid, categorical, request,
             request[canonical] = request[alias]
     threads = _threads(threads)
     regression = problem_type == 'regression'
+    if family == 'extra_trees':
+        if regression:
+            raise ValueError('extra_trees currently supports classification only')
+        if request.get('encoding', 'onehot') != 'onehot':
+            raise ValueError('extra_trees requires onehot encoding')
+        rounds = _number(request, 'iterations', 300, 1, 1000, True)
+        weighting = request.get('auto_class_weights', 'SqrtBalanced' if metric.removeprefix('neg_') in {
+            'macro_f1', 'balanced_accuracy'} else 'None')
+        if weighting not in {'None', 'Balanced', 'SqrtBalanced'}:
+            raise ValueError('Invalid auto_class_weights')
+        native = dict(min_samples_leaf=_number(request, 'min_samples_leaf', 3, 1, 1000, True),
+                      max_features=_number(request, 'max_features', 1., .05, 1.),
+                      random_state=_number(request, 'random_seed', 42, 0, 2 ** 31 - 1, True))
+        parameters = dict(native=native, weighting=weighting, encoding='onehot')
+        adapter = _adapter(family, x_train, y_train, categorical, parameters,
+                           problem_type, metric, threads)
+        adapter._train(x_train, y_train, x_valid, y_valid, rounds, deadline)
+        return adapter
     xgb_regression = family == 'xgboost' and regression
     encoding = request.get('encoding', 'onehot' if xgb_regression else 'native')
     if encoding not in {'native', 'onehot'}:

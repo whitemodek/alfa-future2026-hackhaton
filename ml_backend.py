@@ -63,6 +63,12 @@ def _read_table(path, string_columns=None):
             separator = csv.Sniffer().sniff(head, delimiters=",;\t|").delimiter
         except csv.Error:
             separator = ","
+        # pandas renames duplicate CSV headers before exposing frame.columns.
+        # Check the actual header first instead of accepting an altered schema.
+        with path.open("r", encoding="utf-8-sig", newline="") as stream:
+            header = next(csv.reader(stream, delimiter=separator), [])
+        if len(header) != len(set(header)):
+            raise MLRequestError(f"Duplicate columns in {path.name}")
         frame = pd.read_csv(path, sep=separator, low_memory=False,
                             dtype={name: str for name in (string_columns or [])})
         if string_columns:
@@ -159,8 +165,6 @@ def load_problem(envelope):
     if not isinstance(target, str) or target not in train:
         raise MLRequestError("Cannot identify one target column; set target explicitly.")
     y = train[target]
-    if y.isna().any():
-        raise MLRequestError("Training target contains missing values; clarify labeled rows.")
     problem_type = str(request.get("problem_type", "")).lower()
     if problem_type in {"binary", "multiclass"}:
         problem_type = "classification"
@@ -170,11 +174,25 @@ def load_problem(envelope):
         elif re.search(r"\b(classification|macro.?f1|accuracy|roc.?auc|log.?loss)\b|классификац", text, re.I):
             problem_type = "classification"
         else:
-            kind = type_of_target(y)
+            kind = type_of_target(y.dropna())
             problem_type = "classification" if (kind in {"binary", "multiclass"} and
                 (not pd.api.types.is_numeric_dtype(y) or y.nunique() <= 20)) else "regression"
     if problem_type not in {"classification", "regression"}:
         raise MLRequestError("Only tabular regression or classification is supported.")
+    if problem_type == "classification" and train_path.suffix.lower() not in {".parquet", ".pq"}:
+        # CSV inference can turn distinct codes ("001", "1") into one class,
+        # or interpret a valid label such as "NA" as missing. Keep ordinary
+        # numeric classes numeric, including positive_class=0 requests.
+        lexical = _read_table(train_path, string_columns=[target])[target]
+        if lexical.str.strip().eq("").any():
+            raise MLRequestError("Training target contains missing values; clarify labeled rows.")
+        if (y.isna().any() or lexical.nunique() != y.nunique()
+                or (pd.api.types.is_numeric_dtype(y)
+                    and lexical.str.match(r"^[+-]?0\d").any())):
+            y = lexical
+            train[target] = y
+    if y.isna().any():
+        raise MLRequestError("Training target contains missing values; clarify labeled rows.")
     if problem_type == "regression":
         y = pd.to_numeric(y, errors="raise").astype(float)
         if not np.isfinite(y.to_numpy()).all():
@@ -499,12 +517,15 @@ def _refit_saved(envelope, started, budget, threads):
         raise MLRequestError('Refit manifest must be a bounded regular file inside .ml-artifacts.')
     manifest = json.loads(path.read_text(encoding='utf-8'),
                           parse_constant=lambda value: (_ for _ in ()).throw(MLRequestError('Nonfinite manifest')))
-    if isinstance(manifest, dict) and manifest.get('model') in {'lightgbm', 'xgboost'}:
+    if isinstance(manifest, dict) and manifest.get('model') in {'lightgbm', 'xgboost', 'extra_trees'}:
         from ml_portfolio import refit_single
         return refit_single(envelope, manifest, started, budget, threads)
     if isinstance(manifest, dict) and manifest.get('model') == 'ensemble':
         from ml_portfolio import refit_ensemble
         return refit_ensemble(envelope, manifest, started, budget, threads)
+    if isinstance(manifest, dict) and manifest.get('model') == 'history':
+        from ml_history import refit_history
+        return refit_history(envelope, manifest, started, budget, threads)
     if (not isinstance(manifest, dict) or manifest.get('model') != 'catboost'
             or manifest.get('fit_scope') != 'holdout_train'
             or not isinstance(manifest.get('request'), dict)):
@@ -650,7 +671,7 @@ def run(envelope):
     if not isinstance(request, dict):
         raise MLRequestError("request must be an object.")
     action = request.get("action", "experiment")
-    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit", "search", "portfolio", "ensemble"}:
+    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit", "search", "portfolio", "ensemble", "history"}:
         raise MLRequestError(f"Unsupported action: {action}")
     if not isinstance(request.get("refit", True), bool):
         raise MLRequestError("refit must be true or false.")
@@ -659,14 +680,17 @@ def run(envelope):
         raise MLRequestError("time_budget_seconds must be finite and at least 1.")
     threads = max(1, min(8, int(envelope.get("threads", 1))))
     family = request.get('model', 'catboost')
-    if family not in {'catboost', 'lightgbm', 'xgboost'}:
-        raise MLRequestError('model must be catboost, lightgbm or xgboost.')
+    if family not in {'catboost', 'lightgbm', 'xgboost', 'extra_trees'}:
+        raise MLRequestError('model must be catboost, lightgbm, xgboost or extra_trees.')
     if action == 'portfolio':
         from ml_portfolio import run_portfolio
         return run_portfolio(envelope, started, budget, threads)
     if action == 'ensemble':
         from ml_portfolio import run_ensemble
         return run_ensemble(envelope, started, budget, threads)
+    if action == 'history':
+        from ml_history import run_history
+        return run_history(envelope, started, budget, threads)
     if action == 'search':
         return _search(envelope, started, budget)
     if action == 'refit':

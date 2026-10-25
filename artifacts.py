@@ -152,12 +152,13 @@ def _validate_csv(path, task_dir, schema, sample_override=None, max_bytes=MAX_CS
                         finite = False
                     if not finite:
                         raise ArtifactError(f"Row {rows} contains a nonfinite or invalid number")
-                # Even without a numeric schema, NaN/Infinity must not pass as predictions.
+                # Without a numeric schema, reject nonfinite spellings unless
+                # this column explicitly declares them as valid class labels.
                 for index, value in enumerate(row):
-                    if index not in ids and value.strip().lower() in {
+                    if (index not in ids and index not in allowed and value.strip().lower() in {
                         "nan", "+nan", "-nan", "inf", "+inf", "-inf",
                         "infinity", "+infinity", "-infinity",
-                    }:
+                    }):
                         raise ArtifactError(f"Row {rows} contains a nonfinite prediction")
                 if sample_reader is not None:
                     sample_row = next(sample_reader, None)
