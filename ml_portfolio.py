@@ -376,7 +376,7 @@ def run_portfolio(envelope, started, budget, threads):
             if accepted or not best:
                 best = result
         except Exception as exc:
-            trials.append(dict(model=family, accepted=False, error=type(exc).__name__))
+            trials.append(dict(model=family, accepted=False, error=type(exc).__name__, message=str(exc)[:300]))
     if not best:
         left = max(1, budget - (time.monotonic() - started) - 1)
         best = b.run(dict(envelope, request=dict(request, action='baseline'), time_budget_seconds=left))

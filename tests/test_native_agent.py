@@ -10,6 +10,18 @@ from test_agent import ScriptedProvider, reply, Call
 
 
 class NativeAgentTests(unittest.TestCase):
+    def test_failed_native_worker_retains_bounded_error_response(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            task = root / 'task.md'
+            task.write_text('Regression. Metric RMSE.')
+            runner = Agent(task, ScriptedProvider(), Config(total_seconds=60, reserve_seconds=5))
+            result = runner._backend({'action': 'unsupported-action'}, 15)
+            self.assertNotEqual(result['exit_code'], 0)
+            self.assertEqual(result['response']['status'], 'error')
+            self.assertIn('Unsupported action', result['response']['error'])
+            self.assertIsNone(runner._accept_native_result(result))
+
     def test_native_baseline_survives_first_provider_failure(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

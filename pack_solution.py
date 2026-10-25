@@ -31,7 +31,13 @@ def build(output, source=None):
     try:
         with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED) as archive:
             for name in names:
-                archive.write(source / name, arcname=name)
+                # Match the canonical text stored on the submission branch and
+                # avoid archive changes caused only by checkout time or Windows EOL.
+                entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                entry.compress_type = zipfile.ZIP_DEFLATED
+                entry.create_system = 3
+                entry.external_attr = 0o100644 << 16
+                archive.writestr(entry, (source / name).read_bytes().replace(b'\r\n', b'\n'))
         if temporary.stat().st_size > 100_000_000:
             raise ValueError('ZIP exceeds 100 MB')
         with zipfile.ZipFile(temporary) as archive:

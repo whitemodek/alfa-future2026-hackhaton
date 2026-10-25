@@ -65,6 +65,18 @@ class ExecutionTests(unittest.TestCase):
         result = self.run_code("import sys\nprint(repr(sys.stdin.read()))")
         self.assertEqual(result["stdout"].strip(), "''")
 
+    def test_optional_model_import_has_writable_cache_without_home(self):
+        import importlib.util
+        if importlib.util.find_spec('lightgbm') is None:
+            self.skipTest('LightGBM not installed')
+        result = self.run_code("import os\nfrom pathlib import Path\nimport lightgbm\n"
+                               "assert 'HOME' not in os.environ and 'USERPROFILE' not in os.environ\n"
+                               "cache=Path(os.environ['MPLCONFIGDIR'])\n"
+                               "assert cache.is_relative_to(Path.cwd())\nprint('model imported')",
+                               timeout_seconds=20)
+        self.assertEqual(result['exit_code'], 0, result)
+        self.assertIn('model imported', result['stdout'])
+
     def test_long_training_output_keeps_final_metric_and_error(self):
         result = self.run_code("import sys\nprint('START')\nprint('x' * 50000)\n"
                                "print('FINAL_SCORE=0.75')\n"

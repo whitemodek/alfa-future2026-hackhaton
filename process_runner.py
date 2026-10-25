@@ -147,9 +147,13 @@ def run_python(
                                          delete=False) as script:
             script_path = Path(script.name)
             script.write(code)
+        environment = _child_environment(threads)
+        # LightGBM imports matplotlib. A credential-free environment has no HOME
+        # on Windows; keep its optional cache in this invocation's task folder.
+        environment.update(MPLBACKEND='Agg', MPLCONFIGDIR=str(script_path.with_suffix('.cache')))
         process = subprocess.Popen(
             [sys.executable, "-u", str(script_path)], cwd=cwd,
-            env=_child_environment(threads), stdin=subprocess.DEVNULL,
+            env=environment, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=os.name == "posix",
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP

@@ -171,6 +171,23 @@ class CliTests(unittest.TestCase):
             build(ROOT / 'agent.py')
         self.assertEqual((ROOT / 'agent.py').read_bytes(), before)
 
+    def test_packaging_ignores_checkout_time_and_line_endings(self):
+        source = Path(self.temporary.name) / 'portable-source'
+        source.mkdir()
+        for name in RUNTIME_FILES:
+            (source / name).write_bytes((ROOT / name).read_bytes().replace(b'\r\n', b'\n'))
+        first = Path(self.temporary.name) / 'first.zip'
+        second = Path(self.temporary.name) / 'second.zip'
+        build(first, source)
+        for path in source.iterdir():
+            path.write_bytes(path.read_bytes().replace(b'\n', b'\r\n'))
+            os.utime(path, (1_600_000_000, 1_600_000_000))
+        build(second, source)
+        self.assertEqual(first.read_bytes(), second.read_bytes())
+        with zipfile.ZipFile(second) as archive:
+            self.assertEqual(set(archive.namelist()), set(RUNTIME_FILES))
+            self.assertNotIn(b'\r\n', archive.read('solution.py'))
+
 
 if __name__ == "__main__":
     unittest.main()

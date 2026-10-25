@@ -378,7 +378,7 @@ class Agent:
                 f'sys.argv = [{str(module)!r}, {str(request_path)!r}, {str(response_path)!r}]\n' +
                 f'runpy.run_path({str(module)!r}, run_name="__main__")\n')
         result = run_python(code, self.task_dir, timeout, self.config.memory_mb, self.config.threads)
-        if result['exit_code'] == 0 and response_path.is_file():
+        if response_path.is_file():
             if response_path.is_symlink() or response_path.stat().st_size > 64000:
                 raise ValueError('invalid backend response file')
             response = json.loads(response_path.read_text(encoding='utf-8'),

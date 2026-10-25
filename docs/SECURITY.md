@@ -15,6 +15,12 @@ The LLM provider receives task text, selected metadata, and tool output included
 the conversation. Run only on data permitted to be sent to that provider. Credentials
 belong in environment variables, never task files, prompts, ZIP files, or Git.
 
+Native model bundles are local worker artifacts, not uploaded dependencies.
+LightGBM/XGBoost adapters use joblib for their own saved estimator/preprocessor;
+only private artifact paths with matching hashes are loaded. This is not a safe
+format for arbitrary third-party files. Ensemble validation always uses original
+holdout models; full-data refits are used for test prediction only.
+
 ## Isolation requirement
 
 **A Python subprocess is not a security sandbox.** Removing API credentials from its
