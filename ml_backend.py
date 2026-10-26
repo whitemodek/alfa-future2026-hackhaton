@@ -344,12 +344,15 @@ def load_problem(envelope):
             raise MLRequestError("Probability columns do not match class count.")
         if prediction_type == "probability" and len(output_columns) == 1 and len(classes) != 2:
             raise MLRequestError("One probability column is supported only for binary targets.")
+    flow_features = request.get('flow_features', False)
+    if not isinstance(flow_features, bool) or (flow_features and problem_type != 'classification'):
+        raise MLRequestError('flow_features must be a boolean and requires classification')
     return dict(root=root, text=text, train_path=train_path, test_path=test_path,
                 sample_path=sample_path, train=train, test=test, sample=sample, target=target,
                 y=y, classes=classes, problem_type=problem_type, metric=metric,
                 direction=direction, id_columns=id_columns, features=features,
                 categorical_features=categorical_features,
-                output_columns=output_columns, prediction_type=prediction_type)
+                output_columns=output_columns, prediction_type=prediction_type, flow_features=flow_features)
 
 
 def _features(problem):
@@ -389,6 +392,16 @@ def _features(problem):
             categorical.append(name)
             train[name] = train[name].fillna("__MISSING__").astype(str)
             test[name] = test[name].fillna("__MISSING__").astype(str)
+    if problem.get('flow_features', False):
+        from ml_flow import add_flow_features
+        try:
+            train, derived = add_flow_features(train)
+            test, query_derived = add_flow_features(test)
+        except ValueError as exc:
+            raise MLRequestError(str(exc)) from exc
+        if derived != query_derived or list(train) != list(test):
+            raise MLRequestError('Flow training and test feature schemas differ')
+        categorical.extend(derived)
     return train, test, categorical
 
 
@@ -614,6 +627,9 @@ def _refit_saved(envelope, started, budget, threads):
     if isinstance(manifest, dict) and manifest.get('model') == 'lag':
         from ml_lag import refit_lag
         return refit_lag(envelope, manifest, started, budget, threads)
+    if isinstance(manifest, dict) and manifest.get('model') == 'residual':
+        from ml_residual import refit_residual
+        return refit_residual(envelope, manifest, started, budget, threads)
     if (not isinstance(manifest, dict) or manifest.get('model') != 'catboost'
             or manifest.get('fit_scope') != 'holdout_train'
             or not isinstance(manifest.get('request'), dict)):
@@ -759,7 +775,7 @@ def run(envelope):
     if not isinstance(request, dict):
         raise MLRequestError("request must be an object.")
     action = request.get("action", "experiment")
-    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit", "search", "portfolio", "ensemble", "history", "lag", "confirmed"}:
+    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit", "search", "portfolio", "ensemble", "history", "lag", "confirmed", "seed_bag", "residual"}:
         raise MLRequestError(f"Unsupported action: {action}")
     if not isinstance(request.get("refit", True), bool):
         raise MLRequestError("refit must be true or false.")
@@ -770,6 +786,12 @@ def run(envelope):
     family = request.get('model', 'catboost')
     if family not in {'catboost', 'lightgbm', 'xgboost', 'extra_trees', 'linear'}:
         raise MLRequestError('model must be catboost, lightgbm, xgboost, extra_trees or linear.')
+    if action == 'residual':
+        from ml_residual import run_residual
+        return run_residual(envelope, started, budget, threads)
+    if action == 'seed_bag':
+        from ml_bagging import run_seed_bag
+        return run_seed_bag(envelope, started, budget, threads)
     if action == 'confirmed':
         from ml_confirmed import run_confirmed
         return run_confirmed(envelope, started, budget, threads)

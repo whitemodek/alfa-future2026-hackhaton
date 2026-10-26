@@ -75,6 +75,20 @@ class ConfirmedRuntimeTests(unittest.TestCase):
         for a, c in ((train, selection), (train, audit), (selection, audit)):
             self.assertFalse(set(groups[a]) & set(groups[c]))
 
+    def test_validation_seed_changes_groups_reproducibly_and_preserves_manifest(self):
+        problem = b.load_problem(self.envelope())
+        _, old = b._split(problem, dict(split='group'))
+        _, new = b._split(problem, dict(split='group', validation_seed=20261104))
+        self.assertNotEqual(old.tolist(), new.tolist())
+        _, replay = b._split(problem, dict(split='group', validation_seed=20261104))
+        np.testing.assert_array_equal(new, replay)
+        result = b.run(self.envelope(action='confirmed', split='group', validation_seed=20261104, refit=False))
+        final = b.run(self.envelope(action='refit', manifest_path=result['manifest_path']))
+        self.assertEqual(final['validation_id'], result['validation_id'])
+        for seed in (True, -1, 2 ** 32, .5):
+            with self.subTest(seed=seed), self.assertRaises(b.MLRequestError):
+                b._split(problem, dict(validation_seed=seed))
+
     def test_nested_time_only_trains_on_earlier_complete_periods(self):
         frame = pd.read_csv(self.root / 'train.csv')
         frame['year'] = np.repeat(np.arange(8), 20)

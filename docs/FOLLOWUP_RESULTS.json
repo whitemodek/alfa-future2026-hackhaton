@@ -1,0 +1,347 @@
+{
+  "api_calls": 0,
+  "platform_submissions": 0,
+  "stable_archives_replaced": false,
+  "limitation": "Historical exploratory checks are not a blind platform score; failed gates remain failed.",
+  "studies": [
+    {
+      "name": "duplicate-weighting-study",
+      "completed": true,
+      "passed": false,
+      "seconds": 498.375,
+      "report_sha256": "e50781f85e548f963e61b629e2b1129e72389e076533a5225efb3f1ba8ff5b2a",
+      "rows": [
+        {
+          "fold": "primary",
+          "gain": -0.005710628789111216,
+          "arm_macro_f1": {
+            "none": 0.6544362157528992,
+            "inverse_sqrt": 0.648725586963788
+          }
+        },
+        {
+          "fold": "confirmation17",
+          "gain": -0.0033873953036139826,
+          "arm_macro_f1": {
+            "none": 0.6489992660829103,
+            "inverse_sqrt": 0.6456118707792963
+          }
+        }
+      ]
+    },
+    {
+      "name": "domain-shift-study",
+      "completed": true,
+      "passed": false,
+      "seconds": 97.719,
+      "report_sha256": "29f4d8594880682563bf52c65ddfb3ab68a5f324ca58855faaae0ca2471f6b3f",
+      "rows": [
+        {
+          "gain": -0.006244128056303033,
+          "arm_macro_f1": {
+            "control": 0.6682040804722142,
+            "domain_weighted": 0.6619599524159112
+          }
+        },
+        {
+          "gain": -0.004857054554315177,
+          "arm_macro_f1": {
+            "control": 0.6564017368896947,
+            "domain_weighted": 0.6515446823353795
+          }
+        }
+      ]
+    },
+    {
+      "name": "label-shift-study",
+      "completed": true,
+      "passed": false,
+      "seconds": null,
+      "report_sha256": "3d19e6ab33e749a211e6b9a7ee5ab09e67a01c3db129a7bbb07c97e1674898e1",
+      "rows": [
+        {
+          "fold": "primary",
+          "gain": -0.0011132317072308773,
+          "base_macro_f1": 0.6542098828902487,
+          "candidate_macro_f1": 0.6530966511830179
+        },
+        {
+          "fold": "confirmation17",
+          "gain": -0.004734840811400742,
+          "base_macro_f1": 0.6607663288372568,
+          "candidate_macro_f1": 0.6560314880258561
+        }
+      ]
+    },
+    {
+      "name": "classification-seed-bag-study",
+      "completed": true,
+      "passed": false,
+      "seconds": 311.079,
+      "report_sha256": "77750e85c6f18b4cc5d4e7fadaeb1c0926c4b88564a821b2911ee0aa5ce064e8",
+      "rows": [
+        {
+          "fold": "primary",
+          "gain": 0.0017926549009472659,
+          "base_macro_f1": 0.6542098828902487,
+          "candidate_macro_f1": 0.656002537791196
+        },
+        {
+          "fold": "confirmation17",
+          "gain": 0.00132026503056204,
+          "base_macro_f1": 0.6607663288372568,
+          "candidate_macro_f1": 0.6620865938678189
+        }
+      ]
+    },
+    {
+      "name": "seed-bag-prospective",
+      "completed": true,
+      "passed": false,
+      "seconds": 889.797,
+      "report_sha256": "6ec526e8e9f55ea3ceecc3cf25ffe79921f1f4c417de71d2af3f166eb0a144a7",
+      "rows": [
+        {
+          "seed": 20261104,
+          "gain": 0.0,
+          "outer_scores": {
+            "control": 0.6477726243859844,
+            "candidate": 0.644694453785615
+          },
+          "selected_outer_score": 0.6477726243859844,
+          "selected_bag": false,
+          "inner_control_score": 0.6716728672758966,
+          "inner_candidate_score": 0.6708828591820232,
+          "completed": true
+        },
+        {
+          "seed": 20261105,
+          "gain": 0.0,
+          "outer_scores": {
+            "control": 0.6406018503359678,
+            "candidate": 0.6316257065175691
+          },
+          "selected_outer_score": 0.6406018503359678,
+          "selected_bag": false,
+          "inner_control_score": 0.6521232140409148,
+          "inner_candidate_score": 0.6506892960429892,
+          "completed": true
+        }
+      ]
+    },
+    {
+      "name": "neighbor-expert-study",
+      "completed": true,
+      "passed": false,
+      "seconds": 14.922,
+      "report_sha256": "62386bedc6074cfc3e6735a48318c3fa5d1a91a3391f6c7821fdb19b8529a747",
+      "rows": [
+        {
+          "fold": "primary",
+          "gain": 0.0,
+          "selected_strength": 0.0,
+          "base_macro_f1": 0.6542098828902487,
+          "candidate_macro_f1": 0.6542098828902487
+        },
+        {
+          "fold": "confirmation17",
+          "gain": 0.0,
+          "selected_strength": 0.0,
+          "base_macro_f1": 0.6607663288372568,
+          "candidate_macro_f1": 0.6607663288372568
+        }
+      ]
+    },
+    {
+      "name": "pair-specialist-study",
+      "completed": true,
+      "passed": false,
+      "seconds": 25.844,
+      "report_sha256": "5213e676a66fd08596e89b4f95489025092fb168a44f14de51e4add8ebb2686c",
+      "rows": [
+        {
+          "fold": "primary",
+          "gain": 6.79597260130338e-05,
+          "base_macro_f1": 0.6542098828902487,
+          "candidate_macro_f1": 0.6542778426162618
+        },
+        {
+          "fold": "confirmation17",
+          "gain": -0.000440148128796336,
+          "base_macro_f1": 0.6607663288372568,
+          "candidate_macro_f1": 0.6603261807084605
+        }
+      ]
+    },
+    {
+      "name": "flow-feature-study",
+      "completed": true,
+      "passed": false,
+      "seconds": 65.516,
+      "report_sha256": "c1cf849a03a424324b009d52f4e370e46c2c429d73a70a9e9d7a1dc930fac5d6",
+      "rows": [
+        {
+          "fold": "primary",
+          "gain": 0.004698718336998531,
+          "selected_strength": 0.25,
+          "base_macro_f1": 0.6542098828902487,
+          "candidate_macro_f1": 0.6589086012272473
+        },
+        {
+          "fold": "confirmation17",
+          "gain": -0.008074018969862706,
+          "selected_strength": 0.5,
+          "base_macro_f1": 0.6607663288372568,
+          "candidate_macro_f1": 0.6526923098673941
+        }
+      ]
+    },
+    {
+      "name": "residual-blend-study",
+      "completed": true,
+      "passed": false,
+      "seconds": null,
+      "report_sha256": "da9a0cf82ddbb6e02c539110f2cd447d360170cd3a8bec29b247ca5d2e82ca15",
+      "rows": [
+        {
+          "period": 5,
+          "relative_gain": 0.0006249314068484805,
+          "control_rmse": 37.165877941764165,
+          "candidate_rmse": 37.14265181737526
+        },
+        {
+          "period": 4,
+          "relative_gain": 0.033836926098137175,
+          "control_rmse": 32.64325416847114,
+          "candidate_rmse": 31.538706789569872
+        }
+      ]
+    },
+    {
+      "name": "weather-delta-study",
+      "completed": true,
+      "passed": false,
+      "seconds": 3.641,
+      "report_sha256": "18b217822a5de49800f91f1b33a6361068520e3d1eb72f886816e646a777d11e",
+      "rows": [
+        {
+          "period": 5,
+          "relative_gain": -0.0016061489732901544,
+          "control_rmse": 37.165877941764165,
+          "candidate_rmse": 37.22557187846176
+        },
+        {
+          "period": 4,
+          "relative_gain": 0.033738262352799524,
+          "control_rmse": 32.64325416847114,
+          "candidate_rmse": 31.541927495286142
+        }
+      ]
+    },
+    {
+      "name": "weather-ridge-study",
+      "completed": true,
+      "passed": false,
+      "seconds": 1.531,
+      "report_sha256": "a55860d8ba5e672a27e543ebf0c0c5ee988716592d2f8ef54cd1131c19a3c874",
+      "rows": [
+        {
+          "period": 5,
+          "relative_gain": -0.002835494353696337,
+          "control_rmse": 37.165877941764165,
+          "candidate_rmse": 37.271261578818205
+        },
+        {
+          "period": 4,
+          "relative_gain": 0.028516038381176598,
+          "control_rmse": 32.64325416847114,
+          "candidate_rmse": 31.712397879716512
+        }
+      ]
+    },
+    {
+      "name": "forward-residual-pipeline",
+      "completed": false,
+      "passed": null,
+      "seconds": 271.813,
+      "report_sha256": "779d488cb2857c71e66354d562e31ac7840b5e58221f67a28375534340114acd",
+      "rows": [
+        {
+          "period": 5,
+          "relative_gain": -0.003216900986357731,
+          "outer_rmse": {
+            "control": 42.72207916222927,
+            "candidate": 42.8595118608255,
+            "selected": 42.8595118608255
+          },
+          "completed": true
+        },
+        {
+          "period": 4,
+          "completed": false
+        }
+      ]
+    },
+    {
+      "name": "ag-pilot",
+      "completed": false,
+      "passed": false,
+      "seconds": 11.64,
+      "report_sha256": "6dd98917287beb8091e995d7f57c599dd52b2ae9fb6afc5a8de34d8e8c8096db",
+      "rows": [
+        {
+          "fold": "primary",
+          "completed": false
+        }
+      ],
+      "stopped_early": true,
+      "stop_reason": "Stopped before any outer scoring: slow CatBoost monopolized L1 budget; new diverse allocation uses per-model ceilings and a separately registered protocol"
+    },
+    {
+      "name": "ag-pilot-diverse",
+      "completed": true,
+      "passed": false,
+      "seconds": 2390.672,
+      "report_sha256": "329b27deac8c6db85a630757a8e1741ef847b9dec53503003c50ad7e54681b0a",
+      "rows": [
+        {
+          "fold": "primary",
+          "gain": -0.0005321863445085784,
+          "completed": true,
+          "base_macro_f1": 0.6542098828902487,
+          "candidate_macro_f1": 0.6536776965457402
+        },
+        {
+          "fold": "confirmation17",
+          "gain": 0.006770279151139702,
+          "completed": true,
+          "base_macro_f1": 0.6607663288372568,
+          "candidate_macro_f1": 0.6675366079883965
+        }
+      ]
+    },
+    {
+      "name": "batch-mlp-study",
+      "completed": true,
+      "passed": false,
+      "seconds": 810.625,
+      "report_sha256": "efee86e5f1d2f15538c588575881e3f1be0e8ee734f57573fae8716c5854b46c",
+      "rows": [
+        {
+          "fold": "primary",
+          "gain": 0.005459193803264983,
+          "selected_strength": 0.25,
+          "base_macro_f1": 0.6542098828902487,
+          "candidate_macro_f1": 0.6596690766935137
+        },
+        {
+          "fold": "confirmation17",
+          "gain": -0.0044740611656506335,
+          "selected_strength": 0.5,
+          "base_macro_f1": 0.6607663288372568,
+          "candidate_macro_f1": 0.6562922676716062
+        }
+      ]
+    }
+  ]
+}

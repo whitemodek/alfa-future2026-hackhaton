@@ -175,7 +175,9 @@ class ModelAdapter:
         import numpy as np
         train_x = self._transform(x)
         valid = self._transform(valid_x) if valid_x is not None else None
-        weights = _sample_weights(y, self.parameters['weighting']) if self.classes_ is not None else None
+        weights = (_training_weights(x, y, self.parameters['weighting'],
+                    self.parameters.get('duplicate_weighting', 'none'))
+                   if self.classes_ is not None else None)
         parameters = dict(self.parameters['native'])
         if self.family == 'linear':
             from sklearn.linear_model import LogisticRegression, Ridge
@@ -282,6 +284,39 @@ class ModelAdapter:
         self.tree_count_ = completed
 
 
+class SeedBagAdapter(ModelAdapter):
+    """A small fixed average; each member keeps its own fold-only preprocessing."""
+
+    def __init__(self, members):
+        import numpy as np
+        if not 2 <= len(members) <= 3:
+            raise ValueError('A seed bag requires two or three independent adapters')
+        first = members[0]
+        if (first.classes_ is None or first.family not in {'lightgbm', 'xgboost', 'extra_trees'}
+                or any(isinstance(m, SeedBagAdapter) or m.family != first.family
+                       or m.feature_names_ != first.feature_names_
+                       or not np.array_equal(m.classes_, first.classes_) for m in members)):
+            raise ValueError('Seed bag members must share family, features and class order')
+        parameters = dict(kind='seed_bag', member_parameters=[m.parameters for m in members],
+                          member_tree_counts=[m.tree_count_ for m in members])
+        super().__init__(first.family, first.feature_names_, first.categorical, {}, parameters,
+                         first.problem_type, first.metric, first.classes_, first.threads)
+        self.members = list(members)
+        self.tree_count_ = sum(m.tree_count_ for m in members)
+
+    def predict_proba(self, frame):
+        import numpy as np
+        return np.mean([member.predict_proba(frame) for member in self.members], axis=0)
+
+    def refit(self, x, y, deadline, threads):
+        members = []
+        for index, member in enumerate(self.members):
+            _check_deadline(deadline)
+            allowance = (deadline - time.monotonic()) / (len(self.members) - index)
+            members.append(member.refit(x, y, time.monotonic() + allowance, threads))
+        return SeedBagAdapter(members)
+
+
 def _probability(raw, count):
     import numpy as np
     raw = np.asarray(raw, dtype=float)
@@ -311,6 +346,25 @@ def _select(history, trained, higher):
     return int(best) + 1
 
 
+def _training_weights(x, y, mode, duplicate_weighting='none'):
+    """Class weights with optional TRAIN-only correction of repeated features."""
+    import numpy as np
+    import pandas as pd
+    if duplicate_weighting not in {'none', 'inverse_sqrt'}:
+        raise ValueError('Unknown duplicate weighting')
+    weights = _sample_weights(y, mode)
+    if duplicate_weighting == 'none':
+        return weights
+    if len(x) != len(y) or not len(x):
+        raise ValueError('Training features and labels must align')
+    groups = pd.util.hash_pandas_object(x, index=False).to_numpy()
+    _, inverse, counts = np.unique(groups, return_inverse=True, return_counts=True)
+    repetition = 1. / np.sqrt(counts[inverse].astype(float))
+    combined = repetition if weights is None else weights * repetition
+    # Keep regularization strength comparable: only relative weights change.
+    return combined / combined.mean()
+
+
 def _sample_weights(y, mode):
     import numpy as np
     if mode == 'None':
@@ -331,8 +385,11 @@ def _threads(threads):
     return threads
 
 
-def _adapter(family, x, y, categorical, parameters, problem_type, metric, threads):
+def _adapter(family, x, y, categorical, parameters, problem_type, metric, threads,
+             duplicate_weighting='none'):
     import numpy as np
+    if duplicate_weighting != 'none':
+        parameters = dict(parameters, duplicate_weighting=duplicate_weighting)
     text_columns = (_linear_text_columns(x, categorical)
                     if parameters.get('encoding') == 'linear_sparse' else [])
     category_columns = [name for name in categorical if name not in text_columns]
@@ -432,6 +489,11 @@ def fit(family, x_train, y_train, x_valid, y_valid, categorical, request,
             request[canonical] = request[alias]
     threads = _threads(threads)
     regression = problem_type == 'regression'
+    duplicate_weighting = request.get('duplicate_weighting', 'none')
+    if duplicate_weighting not in {'none', 'inverse_sqrt'}:
+        raise ValueError('duplicate_weighting must be none or inverse_sqrt')
+    if regression and duplicate_weighting != 'none':
+        raise ValueError('Duplicate weighting is currently a classification candidate only')
     if family == 'linear':
         weighting = request.get('auto_class_weights', 'SqrtBalanced' if metric.removeprefix('neg_') in {
             'macro_f1', 'balanced_accuracy'} else 'None')
@@ -441,7 +503,7 @@ def fit(family, x_train, y_train, x_valid, y_valid, categorical, request,
                   dict(C=1., solver='lbfgs', max_iter=200, tol=1e-4, random_state=42))
         parameters = dict(native=native, weighting=weighting, encoding='linear_sparse')
         adapter = _adapter(family, x_train, y_train, categorical, parameters,
-                           problem_type, metric, threads)
+                           problem_type, metric, threads, duplicate_weighting)
         adapter._train(x_train, y_train, x_valid, y_valid, 1, deadline)
         return adapter
     if family == 'extra_trees':
@@ -459,7 +521,7 @@ def fit(family, x_train, y_train, x_valid, y_valid, categorical, request,
                       random_state=_number(request, 'random_seed', 42, 0, 2 ** 31 - 1, True))
         parameters = dict(native=native, weighting=weighting, encoding='onehot')
         adapter = _adapter(family, x_train, y_train, categorical, parameters,
-                           problem_type, metric, threads)
+                           problem_type, metric, threads, duplicate_weighting)
         adapter._train(x_train, y_train, x_valid, y_valid, rounds, deadline)
         return adapter
     xgb_regression = family == 'xgboost' and regression
@@ -506,6 +568,6 @@ def fit(family, x_train, y_train, x_valid, y_valid, categorical, request,
         native['num_class'] = count
     parameters = dict(native=native, weighting=weighting, patience=patience, encoding=encoding)
     adapter = _adapter(family, x_train, y_train, categorical, parameters,
-                       problem_type, metric, threads)
+                       problem_type, metric, threads, duplicate_weighting)
     adapter._train(x_train, y_train, x_valid, y_valid, rounds, deadline)
     return adapter

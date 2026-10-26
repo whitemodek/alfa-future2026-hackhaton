@@ -63,6 +63,9 @@ def plan_validation(problem, request=None):
     from sklearn.model_selection import train_test_split
 
     request = request or {}
+    seed = request.get('validation_seed', 42)
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2 ** 32:
+        raise ValueError('validation_seed must be an integer between 0 and 2**32-1')
     train, test, y = problem["train"], problem["test"], problem["y"]
     indices = np.arange(len(y))
     fraction = float(request.get("validation_fraction", 0.2))
@@ -159,7 +162,7 @@ def plan_validation(problem, request=None):
                             rationale="No independent holdout: all rows share one feature group",
                             diagnostics=diagnostics)
             raise ValueError("Group validation needs at least two distinct groups")
-        order = np.random.RandomState(42).permutation(len(groups))
+        order = np.random.RandomState(seed).permutation(len(groups))
         counts = np.bincount(inverse)
         grouped_rows = np.argsort(inverse, kind="stable")
         offsets = np.concatenate([[0], np.cumsum(counts)])
@@ -187,7 +190,7 @@ def plan_validation(problem, request=None):
             if counts.min() >= 2 and n_valid >= len(counts) and len(y) - n_valid >= len(counts):
                 stratify = y
         train_i, valid_i = train_test_split(indices, test_size=fraction,
-                                            random_state=42, stratify=stratify)
+                                            random_state=seed, stratify=stratify)
         if problem.get("classes") is not None:
             missing = set(y.unique()) - set(y.iloc[train_i].unique())
             move = [next(int(i) for i in valid_i if y.iloc[i] == label) for label in missing]

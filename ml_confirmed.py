@@ -131,7 +131,7 @@ def run_confirmed(envelope, started, budget, threads):
                   action='experiment', model=family, refit=False)
     # Keep the exact original split settings for later refit/reproduction checks.
     params.update({k: request[k] for k in ('split', 'time_column', 'group_columns',
-                   'group_by_features', 'validation_fraction') if k in request})
+                   'group_by_features', 'validation_fraction', 'validation_seed') if k in request})
     test_probability = b._aligned_proba(model, test_x, count) if count else None
     candidate, schema = b._output(problem, model.predict(test_x), test_probability, params)
     path = candidate.with_suffix('.joblib')
