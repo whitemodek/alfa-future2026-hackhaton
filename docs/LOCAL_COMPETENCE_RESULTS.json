@@ -1,0 +1,84 @@
+{
+  "cases": [
+    {
+      "name": "energy_efficiency",
+      "metric": "rmse",
+      "native": 0.3953053921306257,
+      "experimental": 0.5545666058283714,
+      "selected_policy": "lightgbm",
+      "global_pool_control": 0.5545666058283714,
+      "outer_rows": 154,
+      "split_identical": true,
+      "predictions_sha256": "f05d128c288d7bf4ed1905cfc6f86767aa6735b2d5589fd6eb7f6873a619cc6c"
+    },
+    {
+      "name": "wine_quality_red",
+      "metric": "rmse",
+      "native": 0.6554108331101439,
+      "experimental": 0.6619778330204357,
+      "selected_policy": "kernel",
+      "global_pool_control": 0.6619778330204357,
+      "outer_rows": 331,
+      "split_identical": true,
+      "predictions_sha256": "2f415c452af39bd720f9de58b5310d61d8883b89976ac7a1b8244647ece81ae7"
+    },
+    {
+      "name": "diabetes",
+      "metric": "rmse",
+      "native": 57.58297093724375,
+      "experimental": 53.28870960903066,
+      "selected_policy": "linear",
+      "global_pool_control": 53.28870960903066,
+      "outer_rows": 89,
+      "split_identical": true,
+      "predictions_sha256": "fac1e12510160020fa34a0a8fcd8457dc01bb6fa9424d577d1e1993ab8a7057e"
+    },
+    {
+      "name": "bank_marketing_no_duration",
+      "metric": "roc_auc",
+      "native": 0.8103721068880096,
+      "experimental": 0.8073889895367323,
+      "selected_policy": "lightgbm",
+      "global_pool_control": 0.8073889895367323,
+      "outer_rows": 9043,
+      "split_identical": true,
+      "predictions_sha256": "8aba8804e64bf58946178a32adf9e1e544ad2fab6ae6eaef77bffd7a84ea0680"
+    },
+    {
+      "name": "wine_quality_white",
+      "metric": "macro_f1",
+      "native": 0.27832410804499413,
+      "experimental": 0.30838644402189763,
+      "selected_policy": "uniform",
+      "global_pool_control": 0.30838644402189763,
+      "outer_rows": 986,
+      "split_identical": true,
+      "predictions_sha256": "8078f279151a072a3bdd58c1ab09270ed8d283814246042a4e4e5388cb420997"
+    },
+    {
+      "name": "digits",
+      "metric": "macro_f1",
+      "native": 0.9776355164620874,
+      "experimental": 0.9749919584146864,
+      "selected_policy": "local",
+      "global_pool_control": 0.966564499884677,
+      "outer_rows": 360,
+      "split_identical": true,
+      "predictions_sha256": "7a6a9f35dfdbb905a6505e02df180f6a12212767a768910d3f539888aa0400a1"
+    }
+  ],
+  "protocol_sha256": "d5ebe3ebaf7e90ead90abea5a8ade113eba54a970670eba5894394f03dbf6656",
+  "seconds": 41.64,
+  "promotion": {
+    "passes": false,
+    "nonworse": 6,
+    "strict_gains": 1,
+    "gain_problem_types": [
+      "classification"
+    ],
+    "degradation_limits_satisfied": true
+  },
+  "external_api_requests": 0,
+  "platform_submissions": 0,
+  "warning": "One fresh split on previously used public sources; native and experimental compute/model sets differ."
+}

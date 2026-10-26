@@ -156,6 +156,8 @@ python pack_solution.py dist/solution.zip
 - [Специалист по атакам и причинная статистика](docs/CAUSAL_SPECIALIST_STUDY.md)
 - [Предметные стратегии: иерархия атак и прогноз изменения](docs/TASK_STRATEGIES_STUDY.md)
 - [Исправление завершения и отдельный кандидат для отправки](docs/COMPLETION_RECOVERY.md)
+- [Нестандартный ансамбль: проверка на шести открытых кейсах](docs/LOCAL_COMPETENCE_PILOT.md)
+- [Разбор переданной формулы скоринга](docs/SCORING_INTERPRETATION.md)
 - [Формат отправки](docs/SUBMISSION.md)
 - [Границы безопасности](docs/SECURITY.md)
 - [Пояснение для команды и защиты, TXT](docs/PROJECT_EXPLANATION_RU.txt)
