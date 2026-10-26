@@ -1,0 +1,60 @@
+{
+  "protocol": {
+    "seed": 20261103,
+    "cases": [
+      "energy_efficiency",
+      "wine_quality_red",
+      "diabetes"
+    ],
+    "weights": [
+      0.75,
+      0.25
+    ],
+    "api_calls": 0,
+    "platform_submissions": 0,
+    "selection": "One fixed blend, accepted only on the existing validation split before any outer answers are read",
+    "gate": "At least two relative outer RMSE gains >=.5%; no degradation >2%; all three completed",
+    "limitation": "New splits on already researched datasets, exploratory pilot; not an official score",
+    "source_sha256": {
+      "ml_portfolio.py": "42c054bef27435a3672d0d79816a129868af4b6d83d675158a73d1dbc9a082aa",
+      "qa/benchmark_linear_blend.py": "8c4656736f8c1a3d4b10a83d212f0ad23dc749b337ffaa5c1b8e435ce5824fbb"
+    },
+    "dataset_sha256": {
+      "energy_efficiency": "8e4dd3be6184721f3be99e76230d86e4a09a102d8c98be22bb1940fa8da46e42",
+      "wine_quality_red": "d73b81349be9fb18465f19db6b718a9d39322b70695a6cc847c8673da0d4d999",
+      "diabetes": "7d13b3aaae0f822fcade0de3af672a455b107faf162444476fab8817e4897b4e"
+    }
+  },
+  "completed": true,
+  "cases": [
+    {
+      "name": "energy_efficiency",
+      "scores": {
+        "control": 0.4174513007980635,
+        "selected": 0.4174513007980635
+      },
+      "accepted": false,
+      "relative_gain": 0.0
+    },
+    {
+      "name": "wine_quality_red",
+      "scores": {
+        "control": 0.642108921614846,
+        "selected": 0.6482017137101207
+      },
+      "accepted": true,
+      "relative_gain": -0.009488720511703635
+    },
+    {
+      "name": "diabetes",
+      "scores": {
+        "control": 56.62749562145918,
+        "selected": 56.62749562145918
+      },
+      "accepted": false,
+      "relative_gain": 0.0
+    }
+  ],
+  "seconds": 8.781,
+  "passed": false
+}

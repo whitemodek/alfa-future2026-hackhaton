@@ -384,6 +384,8 @@ def run_portfolio(envelope, started, budget, threads):
     for key in ('entity_history', 'entity_lag', 'extra_trees', 'linear'):
         if not isinstance(request.get(key, True), bool):
             raise b.MLRequestError(key + ' must be a boolean.')
+    if not isinstance(request.get('linear_blend', False), bool):
+        raise b.MLRequestError('linear_blend must be a boolean.')
     families = request.get('families', ['catboost', 'lightgbm', 'xgboost'])
     if (not isinstance(families, list) or not families or len(families) > 4
             or len(set(families)) != len(families)
@@ -501,6 +503,7 @@ def run_portfolio(envelope, started, budget, threads):
     # A different inductive bias: trees cannot extrapolate a continuous trend.
     # Run after the established tree portfolio, preserving its checkpoint and
     # forest allowance. The existing worker enforces the hard process deadline.
+    linear_result = None
     if request.get('linear', True) and 'families' not in request:
         left = budget - (time.monotonic() - started)
         allowance = min(20.0, left - 30.0)
@@ -508,6 +511,8 @@ def run_portfolio(envelope, started, budget, threads):
             try:
                 params = dict(request, action='experiment', model='linear', refit=False)
                 result = b.run(dict(envelope, request=params, time_budget_seconds=allowance))
+                if finite_score(result) and result.get('manifest_path'):
+                    linear_result = result
                 accepted = bool(improves(result, best))
                 trials.append(dict(model='linear', score=result.get('score'), accepted=accepted))
                 if accepted:
@@ -515,6 +520,28 @@ def run_portfolio(envelope, started, budget, threads):
                     checkpoint(envelope, best)
             except Exception as exc:
                 trials.append(dict(model='linear', accepted=False, error=type(exc).__name__))
+    # One fixed diversification candidate, rather than a grid of blend weights.
+    # This remains opt-in until a separate public-data pilot passes its gate.
+    blend_control = dict(best) if request.get('linear_blend', False) else None
+    if blend_control is not None and linear_result is not None:
+        problem = b.load_problem(envelope)
+    if (blend_control is not None and linear_result is not None
+            and problem['classes'] is None and budget - (time.monotonic() - started) >= 10):
+        try:
+            trees = [r for r in candidates if r.get('model') in {'catboost', 'lightgbm', 'xgboost'}
+                     and all(r.get(k) == best.get(k) for k in ('metric', 'direction', 'validation_id'))]
+            if trees:
+                tree = (max if best['direction'] == 'maximize' else min)(trees, key=lambda r: r['score'])
+                blended = run_ensemble(dict(envelope, request=dict(action='ensemble',
+                    manifest_paths=[tree['manifest_path'], linear_result['manifest_path']],
+                    weights=[.75, .25])), started, budget, threads)
+                accepted = bool(improves(blended, best))
+                trials.append(dict(model='linear_tree_ensemble', score=blended['score'], accepted=accepted))
+                if accepted:
+                    best = blended
+                    checkpoint(envelope, best)
+        except Exception as exc:
+            trials.append(dict(model='linear_tree_ensemble', accepted=False, error=type(exc).__name__))
     if request.get('entity_history', True) and finite_score(best) and best.get('model') != 'dummy':
         try:
             from ml_history import entity_columns, run_history
@@ -552,4 +579,7 @@ def run_portfolio(envelope, started, budget, threads):
         except Exception as exc:
             trials.append(dict(model='lag', accepted=False, error=type(exc).__name__,
                                message=str(exc)[:300]))
-    return dict(best, portfolio_results=trials, elapsed_seconds=round(time.monotonic() - started, 3))
+    response = dict(best, portfolio_results=trials, elapsed_seconds=round(time.monotonic() - started, 3))
+    if blend_control is not None:
+        response['linear_blend_control'] = blend_control
+    return response
