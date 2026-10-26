@@ -17,39 +17,6 @@ def _time_hint(name, text):
         r"year|time|date|period|год|времен|период|дат", text, re.I))
 
 
-def time_values(series):
-    """Return finite numeric periods or strict ISO dates, otherwise ``None``.
-
-    Parsing is deliberately conservative: arbitrary category codes, locale dates,
-    missing values and mixed date/nondate columns never become automatic clocks.
-    UTC normalization makes offsets comparable without guessing local timezones.
-    """
-    import numpy as np
-    import pandas as pd
-    if not len(series) or series.isna().any():
-        return None
-    if pd.api.types.is_numeric_dtype(series):
-        return series if np.isfinite(series.to_numpy(dtype=float)).all() else None
-    if pd.api.types.is_datetime64_any_dtype(series):
-        parsed = pd.to_datetime(series, errors='coerce', utc=True)
-    else:
-        values = series.astype(str)
-        iso = (r'\d{4}-\d{2}-\d{2}'
-               r'(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?'
-               r'(?:Z|[+-]\d{2}:?\d{2})?)?')
-        if not values.str.fullmatch(iso).all():
-            return None
-        parsed = pd.to_datetime(values, format='ISO8601', errors='coerce', utc=True)
-    if parsed.isna().any():
-        return None
-    try:
-        # Parquet can preserve s/ms/us units while CSV parses nanoseconds.
-        # Calendar/trend features must have the same scale across both inputs.
-        return parsed.dt.as_unit('ns')
-    except (ValueError, OverflowError):
-        return None
-
-
 def plan_validation(problem, request=None):
     """Return indices, actual strategy and an explanation, without fitting models.
 
@@ -105,14 +72,10 @@ def plan_validation(problem, request=None):
             for name in features:
                 if not _time_hint(name, problem.get("text", "")):
                     continue
-                a, b = time_values(train[name]), time_values(test[name])
-                if a is None or b is None:
+                a, b = train[name], test[name]
+                if not pd.api.types.is_numeric_dtype(a) or a.isna().any() or b.isna().any():
                     continue
-                # More than 100 timestamps is normal for event/daily data.
-                # Only compare like representations (numeric vs datetime).
-                if pd.api.types.is_numeric_dtype(a) != pd.api.types.is_numeric_dtype(b):
-                    continue
-                if a.nunique() >= 2 and b.min() > a.max():
+                if 2 <= a.nunique() <= 100 and len(b) and b.min() > a.max():
                     time_column, strategy = name, "time"
                     rationale = "Test periods are later than every training period"
                     break
@@ -125,23 +88,20 @@ def plan_validation(problem, request=None):
             if (time_column not in train or time_column == problem.get('target')
                     or train[time_column].isna().any()):
                 raise ValueError("time_column must name a nonmissing training column other than the target")
-            values = time_values(train[time_column])
-            if values is None:
-                values = train[time_column]
-            counts = values.value_counts(sort=False).sort_index()
-            if len(counts) < 2:
+            values = train[time_column]
+            periods = sorted(values.unique())
+            if len(periods) < 2:
                 raise ValueError("Time validation needs at least two distinct periods")
             # Hold out complete latest periods, including unsorted input rows.
-            # A cumulative count avoids quadratic scans for high-cardinality time.
-            recent = counts.iloc[1:].iloc[::-1]
-            size = int(np.searchsorted(recent.cumsum().to_numpy(),
-                                       math.ceil(len(y) * fraction))) + 1
-            chosen = recent.index[:size]
+            chosen = []
+            for period in reversed(periods[1:]):
+                chosen.append(period)
+                if values.isin(chosen).sum() >= math.ceil(len(y) * fraction):
+                    break
             mask = values.isin(chosen).to_numpy()
             train_i, valid_i = indices[~mask], indices[mask]
             diagnostics["time_column"] = time_column
-            diagnostics["validation_period_count"] = len(chosen)
-            diagnostics["validation_periods"] = [str(x) for x in sorted(chosen)[:100]]
+            diagnostics["validation_periods"] = [str(x) for x in sorted(chosen)]
         else:
             cutoff = max(1, int(len(y) * (1 - fraction)))
             train_i, valid_i = indices[:cutoff], indices[cutoff:]

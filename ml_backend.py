@@ -52,77 +52,6 @@ def metric_direction(name):
     return ("maximize" if base == "minimize" else "minimize") if name.startswith("neg_") else base
 
 
-_METRIC_HINTS = [
-    (r"neg_root_mean_squared_error|neg_rmse", "neg_rmse"),
-    (r"neg_log_loss", "neg_log_loss"),
-    (r"macro[\s_-]*f1|f1[\s_-]*macro|macro.?averaged.?f1", "macro_f1"),
-    (r"weighted[\s_-]*f1|f1[\s_-]*weighted", "weighted_f1"),
-    (r"balanced[\s_-]*accuracy", "balanced_accuracy"),
-    (r"roc[\s_-]*auc|\bauc\b", "roc_auc"),
-    (r"average[\s_-]*precision|\bpr.?auc\b", "average_precision"),
-    (r"log[\s_-]*loss|cross[\s_-]*entropy", "log_loss"),
-    (r"\baccuracy\b", "accuracy"),
-    (r"\brmse\b|root[\s_]+mean[\s_]+squared(?:[\s_]+error)?", "rmse"),
-    (r"\bmape\b|mean[\s_]+absolute[\s_]+percentage[\s_]+error", "mape"),
-    (r"\bmae\b|mean[\s_]+absolute[\s_]+error", "mae"),
-    (r"\bmse\b|mean[\s_]+squared[\s_]+error", "mse"),
-    (r"\br2\b|r²", "r2"), (r"\bf1\b", "f1"),
-]
-
-
-def _metric_mentions(text):
-    """Resolve overlapping aliases (macro F1 is one metric, not also binary F1)."""
-    occupied, names = [], []
-    for pattern, name in _METRIC_HINTS:
-        for match in re.finditer(pattern, text, re.I):
-            if any(match.start() < end and match.end() > start for start, end in occupied):
-                continue
-            occupied.append(match.span())
-            if name not in names:
-                names.append(name)
-    return names
-
-
-def infer_task_metric(text):
-    """Prefer explicit main-metric declarations; never silently resolve conflicts.
-
-    This is deliberately a bounded declaration parser, not natural-language
-    understanding. Explicit request.metric remains authoritative.
-    """
-    # Formatting should not hide a declaration such as **Основная метрика**.
-    plain = re.sub(r"[*`#]", "", text)
-    marker = (r"\b(?:(?:main|primary|evaluation|scoring|target)\s+metric"
-              r"|metric\s+(?:used\s+)?for\s+evaluation"
-              r"|(?:основн|главн|целев)(?:ая|ой|ую)\s+метрик(?:а|ой|у)"
-              r"|метрика\s+оценки)\b")
-    declarations = list(re.finditer(marker, plain, re.I))
-    selected = []
-    for declaration in declarations:
-        tail = plain[declaration.end():declaration.end() + 160].lstrip(" \t\r\n:—=-")
-        tail = re.split(r"[\n.;!?]|\b(?:additionally|additional|secondary|auxiliary|also|"
-                        r"rather\s+than|instead\s+of|because|а\s+не|поскольку|"
-                        r"дополнительно|дополнительная|вспомогательная)\b", tail,
-                        maxsplit=1, flags=re.I)[0]
-        names = _metric_mentions(tail)
-        if not names:
-            # Also accept: "Accuracy is the primary metric".
-            head = plain[max(0, declaration.start() - 100):declaration.start()]
-            head = re.split(r"[\n.;!?]", head)[-1]
-            if re.search(r"(?:\bis(?:\s+the)?|является|—|-)\s*$", head, re.I):
-                names = _metric_mentions(head)
-        if not names:
-            raise MLRequestError('Cannot identify the explicitly declared main metric; set metric explicitly.')
-        selected.extend(name for name in names if name not in selected)
-    if len(selected) > 1:
-        raise MLRequestError('Conflicting main metric declarations; set metric explicitly.')
-    if selected:
-        return selected[0], True
-    # Preserve the historical inference for task descriptions without an
-    # explicit primary declaration. Models must inspect ambiguous task text.
-    names = _metric_mentions(plain)
-    return (names[0] if names else None), False
-
-
 def _read_table(path, string_columns=None):
     import pandas as pd
     if path.suffix.lower() in {".parquet", ".pq"}:
@@ -236,18 +165,11 @@ def load_problem(envelope):
     if not isinstance(target, str) or target not in train:
         raise MLRequestError("Cannot identify one target column; set target explicitly.")
     y = train[target]
-    if request.get('metric'):
-        inferred_metric, declared_metric = canonical_metric(request['metric']), True
-    else:
-        inferred_metric, declared_metric = infer_task_metric(text)
     problem_type = str(request.get("problem_type", "")).lower()
     if problem_type in {"binary", "multiclass"}:
         problem_type = "classification"
     if not problem_type:
-        if declared_metric:
-            problem_type = ('regression' if inferred_metric.removeprefix('neg_') in
-                            {'rmse', 'mse', 'mae', 'mape', 'r2'} else 'classification')
-        elif re.search(r"\b(regression|rmse|mae|mse|r2)\b|регресси", text, re.I):
+        if re.search(r"\b(regression|rmse|mae|mse|r2)\b|регресси", text, re.I):
             problem_type = "regression"
         elif re.search(r"\b(classification|macro.?f1|accuracy|roc.?auc|log.?loss)\b|классификац", text, re.I):
             problem_type = "classification"
@@ -291,7 +213,22 @@ def load_problem(envelope):
             classes = [label for label in classes if label != positive] + [positive]
         mapping = {value: index for index, value in enumerate(classes)}
         y = y.map(mapping).astype(int)
-    metric = inferred_metric or ("macro_f1" if problem_type == "classification" else "rmse")
+    metric = request.get("metric")
+    if not metric:
+        hints = [(r"neg_root_mean_squared_error", "neg_rmse"),
+                 (r"neg_log_loss", "neg_log_loss"),
+                 (r"macro[\s_-]*f1|f1[\s_-]*macro|macro.?averaged.?f1", "macro_f1"),
+                 (r"weighted[\s_-]*f1|f1[\s_-]*weighted", "weighted_f1"),
+                 (r"balanced[\s_-]*accuracy", "balanced_accuracy"),
+                 (r"roc[\s_-]*auc|\bauc\b", "roc_auc"),
+                 (r"average[\s_-]*precision|\bpr.?auc\b", "average_precision"),
+                 (r"log[\s_-]*loss|cross[\s_-]*entropy", "log_loss"),
+                 (r"\baccuracy\b", "accuracy"), (r"\brmse\b|root mean squared", "rmse"),
+                 (r"\bmape\b", "mape"), (r"\bmae\b|mean absolute error", "mae"),
+                 (r"\bmse\b|mean squared error", "mse"), (r"\br2\b|r²", "r2"),
+                 (r"\bf1\b", "f1")]
+        metric = next((name for pattern, name in hints if re.search(pattern, text, re.I)),
+                      "macro_f1" if problem_type == "classification" else "rmse")
     metric = canonical_metric(metric)
     direction = metric_direction(metric)
     if request.get("direction", direction) != direction:
@@ -360,28 +297,6 @@ def _features(problem):
     test = problem["test"][problem["features"]].copy()
     categorical = []
     for name in problem["features"]:
-        # Exact ISO dates carry trend and calendar information. A categorical
-        # encoding makes every future date unknown instead of extrapolating.
-        from ml_validation import _time_hint, time_values
-        if (name not in problem['categorical_features']
-                and not pd.api.types.is_numeric_dtype(train[name])
-                and _time_hint(name, problem.get('text', ''))):
-            dates = time_values(train[name])
-            future_dates = time_values(test[name])
-            if (dates is not None and future_dates is not None
-                    and pd.api.types.is_datetime64_any_dtype(dates)
-                    and pd.api.types.is_datetime64_any_dtype(future_dates)):
-                for frame, values in ((train, dates), (test, future_dates)):
-                    frame[name] = values.astype('int64').astype(float) / 86_400_000_000_000
-                    for suffix, vector in (('month', values.dt.month),
-                                           ('weekday', values.dt.dayofweek),
-                                           ('dayofyear', values.dt.dayofyear),
-                                           ('hour', values.dt.hour)):
-                        derived = name + '__calendar_' + suffix
-                        while derived in problem['features']:
-                            derived += '_'
-                        frame[derived] = vector.astype(float)
-                continue
         if pd.api.types.is_numeric_dtype(train[name]) and name not in problem["categorical_features"]:
             train[name] = pd.to_numeric(train[name], errors="coerce").astype(float).replace([np.inf, -np.inf], np.nan)
             test[name] = pd.to_numeric(test[name], errors="coerce").astype(float).replace([np.inf, -np.inf], np.nan)
@@ -602,7 +517,7 @@ def _refit_saved(envelope, started, budget, threads):
         raise MLRequestError('Refit manifest must be a bounded regular file inside .ml-artifacts.')
     manifest = json.loads(path.read_text(encoding='utf-8'),
                           parse_constant=lambda value: (_ for _ in ()).throw(MLRequestError('Nonfinite manifest')))
-    if isinstance(manifest, dict) and manifest.get('model') in {'lightgbm', 'xgboost', 'extra_trees', 'linear'}:
+    if isinstance(manifest, dict) and manifest.get('model') in {'lightgbm', 'xgboost', 'extra_trees'}:
         from ml_portfolio import refit_single
         return refit_single(envelope, manifest, started, budget, threads)
     if isinstance(manifest, dict) and manifest.get('model') == 'ensemble':
@@ -768,8 +683,8 @@ def run(envelope):
         raise MLRequestError("time_budget_seconds must be finite and at least 1.")
     threads = max(1, min(8, int(envelope.get("threads", 1))))
     family = request.get('model', 'catboost')
-    if family not in {'catboost', 'lightgbm', 'xgboost', 'extra_trees', 'linear'}:
-        raise MLRequestError('model must be catboost, lightgbm, xgboost, extra_trees or linear.')
+    if family not in {'catboost', 'lightgbm', 'xgboost', 'extra_trees'}:
+        raise MLRequestError('model must be catboost, lightgbm, xgboost or extra_trees.')
     if action == 'portfolio':
         from ml_portfolio import run_portfolio
         return run_portfolio(envelope, started, budget, threads)

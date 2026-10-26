@@ -243,7 +243,7 @@ def _load_model(problem, manifest, validation=False):
     if (model.family != 'xgboost' or model.classes_ is not None
             or model.parameters != manifest['training_parameters']
             or model.tree_count_ != manifest['selected_iterations']
-            or model.feature_names_ != [*b._features(problem)[0].columns, *LAG_COLUMNS]
+            or model.feature_names_ != [*problem['features'], *LAG_COLUMNS]
             or model.categorical != manifest['categorical_features']):
         raise b.MLRequestError('Lag model parameters differ from the configuration.')
     return model
