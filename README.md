@@ -152,6 +152,7 @@ python pack_solution.py dist/solution.zip
 - [Исследование дисбаланса и новых методов](docs/RARE_CLASS_STUDY.md)
 - [Расширение покрытия задач и парные проверки](docs/GENERALIZATION_UPGRADE.md)
 - [Специалист по атакам и причинная статистика](docs/CAUSAL_SPECIALIST_STUDY.md)
+- [Предметные стратегии: иерархия атак и прогноз изменения](docs/TASK_STRATEGIES_STUDY.md)
 - [Формат отправки](docs/SUBMISSION.md)
 - [Границы безопасности](docs/SECURITY.md)
 - [Пояснение для команды и защиты, TXT](docs/PROJECT_EXPLANATION_RU.txt)
