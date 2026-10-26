@@ -1,0 +1,261 @@
+{
+  "protocol": {
+    "seed": 20261102,
+    "cases": [
+      "energy_efficiency",
+      "wine_quality_red",
+      "diabetes",
+      "wine_quality_white",
+      "digits"
+    ],
+    "selection": "Augment current native portfolio only if confirmation score improves on the SAME original split; never select with outer answers",
+    "budgets": {
+      "native": 90,
+      "confirmed": 90,
+      "refit": 30
+    },
+    "threads": 2,
+    "api_calls": 0,
+    "platform_submissions": 0,
+    "gate": "At least 4/5 nonworse outer scores; 2 gains >=.002 F1 or .5% RMSE; no loss >.01 F1 or >2% RMSE. Otherwise no default enablement.",
+    "limitation": "New split on previously explored public datasets; unequal extra compute; not a blind leaderboard estimate",
+    "source_sha256": {
+      "ml_confirmed.py": "ef5ce89fa9ff433009282ec0b293cc07f488dcc64fe0c2d26d2f9f6f0eea4574",
+      "ml_backend.py": "c202ddd11f4c4978c7e438f3d44340b3df0406e812b04ef04110874d1d11133d",
+      "ml_models.py": "8bd28a56bc6ca797803eb453abd9c11c519da02b781ee09aad62a23e76577ce0",
+      "ml_portfolio.py": "2da64201cb0c939679e0e139507c9d75ee433b3455eb720e7e0b0e2deed18b6d",
+      "qa/benchmark_confirmed.py": "07326ff7e59934895d86c1a6c8c3f5c42c4e2df351bbc3ec4a48f00593bd6af5"
+    },
+    "dataset_sha256": {
+      "energy_efficiency": "8e4dd3be6184721f3be99e76230d86e4a09a102d8c98be22bb1940fa8da46e42",
+      "wine_quality_red": "d73b81349be9fb18465f19db6b718a9d39322b70695a6cc847c8673da0d4d999",
+      "diabetes": "7d13b3aaae0f822fcade0de3af672a455b107faf162444476fab8817e4897b4e",
+      "wine_quality_white": "4c42d9a7afbb7e893bf547c6e00723da993340a5dda8881165057f8c1942b74e",
+      "digits": "e519ade8e150515c6544752b39eb10729224c0b92b31617ddccb3a5843bc68f0"
+    }
+  },
+  "completed": true,
+  "cases": [
+    {
+      "name": "energy_efficiency",
+      "metric": "rmse",
+      "scores": {
+        "control": 0.30076996899601766,
+        "candidate": 0.36356412253411063,
+        "selected": 0.30076996899601766
+      },
+      "selected": "control",
+      "gain": 0.0,
+      "confirmation": {
+        "selection_gain": 0.061958937963493166,
+        "confirmation_gain": 0.036942152708128784,
+        "minimum_gains": [
+          0.002883231117474146,
+          0.0024535361097032214
+        ],
+        "accepted": true,
+        "trials": [
+          {
+            "model": "lightgbm",
+            "selection_score": 0.5766462234948292,
+            "selected_iterations": 360,
+            "confirmation_score": 0.4907072219406443
+          },
+          {
+            "model": "xgboost",
+            "selection_score": 0.514687285531336,
+            "selected_iterations": 360,
+            "confirmation_score": 0.4537650692325155
+          },
+          {
+            "model": "linear",
+            "selection_score": 2.6953577289727986,
+            "selected_iterations": 1
+          }
+        ],
+        "inner_training_rows": 392,
+        "selection_rows": 99,
+        "confirmation_rows": 123
+      },
+      "error": null,
+      "seconds": 6.235
+    },
+    {
+      "name": "wine_quality_red",
+      "metric": "rmse",
+      "scores": {
+        "control": 0.6813598910188886,
+        "candidate": 0.6830344499548964,
+        "selected": 0.6813598910188886
+      },
+      "selected": "control",
+      "gain": 0.0,
+      "confirmation": {
+        "selection_gain": 0.010407949975956066,
+        "confirmation_gain": 0.006393153090296644,
+        "minimum_gains": [
+          0.003279752672297639,
+          0.0030496454043565002
+        ],
+        "accepted": true,
+        "trials": [
+          {
+            "model": "lightgbm",
+            "selection_score": 0.6559505344595278,
+            "selected_iterations": 51,
+            "confirmation_score": 0.6099290808713
+          },
+          {
+            "model": "xgboost",
+            "selection_score": 0.6455425844835717,
+            "selected_iterations": 63,
+            "confirmation_score": 0.6035359277810034
+          },
+          {
+            "model": "linear",
+            "selection_score": 0.6510105608494858,
+            "selected_iterations": 1
+          }
+        ],
+        "inner_training_rows": 822,
+        "selection_rows": 209,
+        "confirmation_rows": 258
+      },
+      "error": null,
+      "seconds": 2.14
+    },
+    {
+      "name": "diabetes",
+      "metric": "rmse",
+      "scores": {
+        "control": 61.9596974398809,
+        "candidate": 56.30100600968395,
+        "selected": 61.9596974398809
+      },
+      "selected": "control",
+      "gain": 0.0,
+      "confirmation": {
+        "selection_gain": 5.726431917627949,
+        "confirmation_gain": 2.269065746837022,
+        "minimum_gains": [
+          0.29339010706066654,
+          0.2840977764193728
+        ],
+        "accepted": true,
+        "trials": [
+          {
+            "model": "lightgbm",
+            "selection_score": 58.67802141213331,
+            "selected_iterations": 78,
+            "confirmation_score": 56.81955528387456
+          },
+          {
+            "model": "xgboost",
+            "selection_score": 62.02336194134892,
+            "selected_iterations": 70
+          },
+          {
+            "model": "linear",
+            "selection_score": 52.95158949450536,
+            "selected_iterations": 1,
+            "confirmation_score": 54.550489537037535
+          }
+        ],
+        "inner_training_rows": 225,
+        "selection_rows": 57,
+        "confirmation_rows": 71
+      },
+      "error": null,
+      "seconds": 2.297
+    },
+    {
+      "name": "wine_quality_white",
+      "metric": "macro_f1",
+      "scores": {
+        "control": 0.2887329136350522,
+        "candidate": 0.2734086004049118,
+        "selected": 0.2887329136350522
+      },
+      "selected": "control",
+      "gain": 0.0,
+      "confirmation": {
+        "selection_gain": 0.018916125551807217,
+        "confirmation_gain": 0.01373490774901548,
+        "minimum_gains": [
+          0.002,
+          0.002
+        ],
+        "accepted": true,
+        "trials": [
+          {
+            "model": "lightgbm",
+            "selection_score": 0.2828155981596312,
+            "selected_iterations": 79,
+            "confirmation_score": 0.2630128515395462
+          },
+          {
+            "model": "xgboost",
+            "selection_score": 0.3017317237114384,
+            "selected_iterations": 4,
+            "confirmation_score": 0.27674775928856166
+          },
+          {
+            "model": "linear",
+            "selection_score": 0.26110569528219185,
+            "selected_iterations": 1
+          }
+        ],
+        "inner_training_rows": 2515,
+        "selection_rows": 629,
+        "confirmation_rows": 788
+      },
+      "error": null,
+      "seconds": 10.094
+    },
+    {
+      "name": "digits",
+      "metric": "macro_f1",
+      "scores": {
+        "control": 0.980462004058176,
+        "candidate": 0.983398511994684,
+        "selected": 0.980462004058176
+      },
+      "selected": "control",
+      "gain": 0.0,
+      "confirmation": {
+        "selection_gain": 0.0,
+        "confirmation_gain": 0.0,
+        "minimum_gains": [
+          0.002,
+          0.002
+        ],
+        "accepted": false,
+        "trials": [
+          {
+            "model": "lightgbm",
+            "selection_score": 0.9826862389356205,
+            "selected_iterations": 288,
+            "confirmation_score": 0.9688569393245021
+          },
+          {
+            "model": "xgboost",
+            "selection_score": 0.9738901139484686,
+            "selected_iterations": 210
+          },
+          {
+            "model": "linear",
+            "selection_score": 0.9563804867729422,
+            "selected_iterations": 1
+          }
+        ],
+        "inner_training_rows": 919,
+        "selection_rows": 230,
+        "confirmation_rows": 288
+      },
+      "error": null,
+      "seconds": 57.39
+    }
+  ],
+  "seconds": 78.171,
+  "passed": false
+}

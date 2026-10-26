@@ -759,7 +759,7 @@ def run(envelope):
     if not isinstance(request, dict):
         raise MLRequestError("request must be an object.")
     action = request.get("action", "experiment")
-    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit", "search", "portfolio", "ensemble", "history", "lag"}:
+    if action not in {"inspect", "baseline", "experiment", "train", "finalize", "refit", "search", "portfolio", "ensemble", "history", "lag", "confirmed"}:
         raise MLRequestError(f"Unsupported action: {action}")
     if not isinstance(request.get("refit", True), bool):
         raise MLRequestError("refit must be true or false.")
@@ -770,6 +770,9 @@ def run(envelope):
     family = request.get('model', 'catboost')
     if family not in {'catboost', 'lightgbm', 'xgboost', 'extra_trees', 'linear'}:
         raise MLRequestError('model must be catboost, lightgbm, xgboost, extra_trees or linear.')
+    if action == 'confirmed':
+        from ml_confirmed import run_confirmed
+        return run_confirmed(envelope, started, budget, threads)
     if action == 'portfolio':
         from ml_portfolio import run_portfolio
         return run_portfolio(envelope, started, budget, threads)

@@ -1,0 +1,77 @@
+{
+  "protocol": {
+    "folds": [
+      "primary",
+      "confirmation17"
+    ],
+    "gate": "Delta >= .002 on each outer fold; no further grid search",
+    "source_sha256": "33b2686873498f952e6d47d7104e6bf0818f698e2ed90b496726d35b167d463c",
+    "api_calls": 0,
+    "platform_submissions": 0,
+    "limitation": "Historical folds/caches; base inner early stopping reused inner labels. Outer labels do not fit weights; not a blind estimate or full runtime comparison."
+  },
+  "trials": [
+    {
+      "fold": "primary",
+      "guards": {
+        "outer_row_overlap": 0,
+        "inner_row_overlap": 0,
+        "outer_group_overlap": 0,
+        "inner_group_overlap": 0,
+        "inner_folds_partition_outer_train": true
+      },
+      "weights": [
+        0.8,
+        0.64,
+        1.0,
+        1.0,
+        1.5625,
+        0.64,
+        1.0,
+        1.0,
+        0.64,
+        0.8
+      ],
+      "base": 0.6542098828902487,
+      "challenger": 0.6539256802843545,
+      "gain": -0.00028420260589423485,
+      "cache_sha256": {
+        "night-classification-results/primary-lightgbm63_sqrt.npz": "4a049917cd4c9ebe34d01cb9b0a54568af13450623ce5be5389c557998f22739",
+        "night-classification-results/primary-xgboost6_sqrt.npz": "a2204cbba205565d95e1f82fa5e8fb01711026c8936b87900903da2f3b7b5b43",
+        "late-extra100-results/primary-raw100.npz": "e12c8e384d2505356faa6204255ee87214c90219d5ce73f55761b446e1dc6366"
+      }
+    },
+    {
+      "fold": "confirmation17",
+      "guards": {
+        "outer_row_overlap": 0,
+        "inner_row_overlap": 0,
+        "outer_group_overlap": 0,
+        "inner_group_overlap": 0,
+        "inner_folds_partition_outer_train": true
+      },
+      "weights": [
+        1.5625,
+        1.0,
+        1.25,
+        0.8,
+        0.64,
+        1.5625,
+        0.8,
+        0.64,
+        0.64,
+        1.5625
+      ],
+      "base": 0.6607663288372568,
+      "challenger": 0.6609931237607929,
+      "gain": 0.00022679492353605557,
+      "cache_sha256": {
+        "night-classification-results/confirmation17-lightgbm63_sqrt.npz": "0bbfcea2a00c1638d3b80711fe969b972fecf82d3bbc70fab490db5186ccc5a8",
+        "night-classification-results/confirmation17-xgboost6_sqrt.npz": "69c21cb5431ac27e3d2dc6fd12730aea577197b12e9eaeac67dea7a0f0bbba24",
+        "late-extra100-results/confirmation17-raw100.npz": "39bdd812c469d20679263d87cbe130a01d504981701cc85467e1cdc2d5d7a984"
+      }
+    }
+  ],
+  "passed": false,
+  "seconds": 1.328
+}
