@@ -478,6 +478,7 @@ class Agent:
     def run(self, *, bootstrap=False):
         reason = 'step_limit'
         cancelled = False
+        plain_response_retries = 0
         previous_handler = None
         if threading.current_thread() is threading.main_thread():
             def on_sigterm(signum, frame):
@@ -496,11 +497,20 @@ class Agent:
                     **({'tool_calls': [c.model_dump(exclude_none=True) for c in calls]} if calls else {})})
                 assistant_message = self.messages[-1]
                 if not calls:
-                    if self.store.best:
-                        reason = 'completed'
+                    if self.store.best and plain_response_retries >= 2:
+                        reason = 'invalid_completion'
                         break
-                    self.messages.append({'role': 'user', 'content': 'No registered candidate. Produce, validate and register a submission before finishing.'})
+                    plain_response_retries += 1
+                    self.journal('completion_retry', retry=plain_response_retries,
+                                 has_candidate=bool(self.store.best))
+                    instruction = ('A text response does not complete this task. '
+                        'The saved candidate remains safe. Continue with tools if a justified '
+                        'experiment remains, or call finish explicitly to publish it.'
+                        if self.store.best else 'No registered candidate. Produce, validate and '
+                        'register a submission before finishing.')
+                    self.messages.append({'role': 'user', 'content': instruction})
                     continue
+                plain_response_retries = 0
                 for call in calls:
                     try:
                         if len(call.function.arguments) > 140000:
