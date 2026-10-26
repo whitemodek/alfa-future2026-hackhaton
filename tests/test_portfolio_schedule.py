@@ -7,7 +7,7 @@ from ml_portfolio import run_portfolio
 
 class PortfolioScheduleTests(unittest.TestCase):
     def schedule(self, *, budget=300, pair_seconds=5, forest_seconds=20,
-                 forest_error=None, extended_pair_seconds=5):
+                 forest_error=None, extended_pair_seconds=5, linear=False):
         clock = [0.0]
         calls, ensembles, saved = [], [], []
 
@@ -26,7 +26,7 @@ class PortfolioScheduleTests(unittest.TestCase):
                     raise forest_error('optional forest interrupted')
                 return result(family, .64)
             clock[0] += 10
-            return result(family, {'catboost': .60, 'lightgbm': .65, 'xgboost': .64}[family])
+            return result(family, {'catboost': .60, 'lightgbm': .65, 'xgboost': .64, 'linear': .70}[family])
 
         def ensemble(envelope, started, allowance, threads):
             paths = envelope['request']['manifest_paths']
@@ -41,7 +41,8 @@ class PortfolioScheduleTests(unittest.TestCase):
         def checkpoint(envelope, best):
             saved.append(dict(best))
 
-        envelope = {'request': {'action': 'portfolio', 'seed_bagging': False, 'entity_history': False}}
+        envelope = {'request': {'action': 'portfolio', 'seed_bagging': False,
+                                'entity_history': False, 'linear': linear}}
         patches = (patch('ml_portfolio.time.monotonic', side_effect=lambda: clock[0]),
                    patch('ml_backend.run', side_effect=train),
                    patch('ml_backend.load_problem', return_value={'classes': [0, 1]}),
@@ -103,6 +104,20 @@ class PortfolioScheduleTests(unittest.TestCase):
         result = self.execute(case)
         self.assertEqual(len(case[3]), 2)
         self.assertEqual(result['model'], 'forest_pair')
+
+    def test_linear_runs_after_tree_checkpoints_and_can_improve_them(self):
+        case = self.schedule(linear=True)
+        result = self.execute(case)
+        self.assertEqual(result['model'], 'linear')
+        self.assertEqual(case[2][-1][0], 'linear')
+        self.assertEqual(case[2][-1][1], 20)
+        self.assertEqual(case[4][-2]['model'], 'forest_triple')
+        self.assertEqual(case[4][-1]['model'], 'linear')
+
+    def test_linear_skipped_when_optional_work_exhausts_budget(self):
+        case = self.schedule(linear=True, forest_seconds=300, forest_error=TimeoutError)
+        self.assertEqual(self.execute(case)['model'], 'legacy_ensemble')
+        self.assertNotIn('linear', [name for name, _, _ in case[2]])
 
 
 if __name__ == '__main__':

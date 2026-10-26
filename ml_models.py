@@ -1,4 +1,4 @@
-"""CPU tree adapters with fold-only categorical vocabularies and bounded fitting.
+"""CPU model adapters with fold-only preprocessing and bounded fitting.
 
 Only load bundles produced by this worker from the private artifact directory:
 joblib, like native generated Python, is not an untrusted-input sandbox.
@@ -10,6 +10,23 @@ from pathlib import Path
 import time
 
 MAX_DENSE_CELLS = 50_000_000
+MAX_LINEAR_COLUMNS = 200_000
+MAX_TEXT_CHARACTERS = 100_000_000
+
+
+def _linear_text_columns(frame, categorical):
+    """Identify natural-language columns from this training fold only."""
+    result = []
+    for name in categorical:
+        values = frame[name].fillna('').astype(str)
+        unique = values.nunique()
+        if (unique >= 20 and unique / max(1, len(values)) >= .2
+                and values.str.len().mean() >= 25
+                and values.str.split().str.len().mean() >= 4):
+            result.append(name)
+            if len(result) == 4:
+                break
+    return result
 
 
 def _number(request, name, default, low, high, integer=False):
@@ -50,6 +67,32 @@ class ModelAdapter:
         import pandas as pd
         if not set(self.feature_names_).issubset(frame.columns):
             raise ValueError('Prediction features differ from training')
+        if self.parameters.get('encoding') == 'linear_sparse':
+            from scipy import sparse
+            numeric = [name for name in self.feature_names_ if name not in self.categorical]
+            text_columns = getattr(self, 'text_columns', [])
+            categorical = [name for name in self.categorical if name not in text_columns]
+            indicators = len(self.imputer.indicator_.features_) if self.imputer is not None else 0
+            if len(frame) * (len(numeric) + indicators + len(categorical)) > MAX_DENSE_CELLS:
+                raise ValueError('Linear feature expansion exceeds the nonzero-entry limit')
+            blocks = []
+            if numeric:
+                number = frame[numeric].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=np.float64)
+                number[~np.isfinite(number)] = np.nan
+                number = sparse.csr_matrix(self.imputer.transform(number))
+                blocks.append(self.scaler.transform(number))
+            if self.encoder is not None:
+                blocks.append(self.encoder.transform(frame[categorical].fillna('__MISSING__').astype(str)))
+            text_characters = 0
+            for name, vectorizer in getattr(self, 'text_vectorizers', {}).items():
+                values = frame[name].fillna('').astype(str)
+                text_characters += int(values.str.len().sum())
+                if text_characters > MAX_TEXT_CHARACTERS:
+                    raise ValueError('Linear text input exceeds the character limit')
+                blocks.append(vectorizer.transform(values))
+                if sum(block.nnz for block in blocks) > MAX_DENSE_CELLS:
+                    raise ValueError('Linear feature expansion exceeds the nonzero-entry limit')
+            return sparse.hstack(blocks, format='csr') if blocks else sparse.csr_matrix((len(frame), 1))
         if self.parameters.get('encoding') == 'onehot':
             numeric = [name for name in self.feature_names_ if name not in self.categorical]
             imputer = getattr(self, 'imputer', None)
@@ -81,6 +124,9 @@ class ModelAdapter:
 
     def _raw_predict(self, frame):
         transformed = self._transform(frame)
+        if self.family == 'linear':
+            return (self.model.predict(transformed) if self.classes_ is None
+                    else self.model.predict_proba(transformed))
         if self.family == 'extra_trees':
             return self.model.predict_proba(transformed)
         if self.family == 'lightgbm':
@@ -110,7 +156,7 @@ class ModelAdapter:
     def load_model(cls, path):
         import joblib
         model = joblib.load(Path(path))
-        if not isinstance(model, cls) or model.family not in {'lightgbm', 'xgboost', 'extra_trees'}:
+        if not isinstance(model, cls) or model.family not in {'lightgbm', 'xgboost', 'extra_trees', 'linear'}:
             raise ValueError('Invalid model adapter bundle')
         return model
 
@@ -131,6 +177,16 @@ class ModelAdapter:
         valid = self._transform(valid_x) if valid_x is not None else None
         weights = _sample_weights(y, self.parameters['weighting']) if self.classes_ is not None else None
         parameters = dict(self.parameters['native'])
+        if self.family == 'linear':
+            from sklearn.linear_model import LogisticRegression, Ridge
+            from threadpoolctl import threadpool_limits
+            _check_deadline(deadline)
+            model = Ridge(**parameters) if self.classes_ is None else LogisticRegression(**parameters)
+            with threadpool_limits(limits=self.threads):
+                model.fit(train_x, y, sample_weight=weights)
+            _check_deadline(deadline)
+            self.model, self.tree_count_ = model, 1
+            return
         if self.family == 'extra_trees':
             self._train_extra_trees(train_x, y, weights, rounds, deadline)
             return
@@ -277,13 +333,64 @@ def _threads(threads):
 
 def _adapter(family, x, y, categorical, parameters, problem_type, metric, threads):
     import numpy as np
+    text_columns = (_linear_text_columns(x, categorical)
+                    if parameters.get('encoding') == 'linear_sparse' else [])
+    category_columns = [name for name in categorical if name not in text_columns]
     vocabulary = {name: list(dict.fromkeys(x[name].fillna('__MISSING__').astype(str)))
-                  for name in categorical}
+                  for name in category_columns}
     classes = sorted(np.unique(y).tolist()) if problem_type == 'classification' else None
     if classes is not None and (len(classes) < 2 or classes != list(range(len(classes)))):
         raise ValueError('Classification labels must be contiguous encoded integers starting at zero')
     adapter = ModelAdapter(family, list(x.columns), categorical, vocabulary, parameters,
                            problem_type, metric, classes, threads)
+    if parameters.get('encoding') == 'linear_sparse':
+        from scipy import sparse
+        from sklearn.impute import SimpleImputer
+        from sklearn.preprocessing import OneHotEncoder, StandardScaler
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        numeric = [name for name in x.columns if name not in categorical]
+        width = len(numeric) + sum(map(len, vocabulary.values()))
+        if width > MAX_LINEAR_COLUMNS or len(x) * (2 * len(numeric) + len(category_columns)) > MAX_DENSE_CELLS:
+            raise ValueError('Linear feature expansion exceeds the sparse resource limit')
+        adapter.scaler = None
+        if numeric:
+            import pandas as pd
+            number = x[numeric].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=np.float64)
+            number[~np.isfinite(number)] = np.nan
+            adapter.imputer = SimpleImputer(strategy='median', add_indicator=True,
+                                             keep_empty_features=True)
+            number = sparse.csr_matrix(adapter.imputer.fit_transform(number))
+            width += len(adapter.imputer.indicator_.features_)
+            if width > MAX_LINEAR_COLUMNS:
+                raise ValueError('Linear feature expansion exceeds the sparse resource limit')
+            adapter.scaler = StandardScaler(with_mean=False).fit(number)
+        if category_columns:
+            adapter.encoder = OneHotEncoder(handle_unknown='ignore', sparse_output=True, dtype=np.float64)
+            adapter.encoder.fit(x[category_columns].fillna('__MISSING__').astype(str))
+        adapter.text_columns, adapter.text_vectorizers = text_columns, {}
+        text_entries, text_characters = 0, 0
+        for name in text_columns:
+            values = x[name].fillna('').astype(str)
+            text_characters += int(values.str.len().sum())
+            if text_characters > MAX_TEXT_CHARACTERS:
+                raise ValueError('Linear text input exceeds the character limit')
+            vectorizer = TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True,
+                                         max_features=20_000, dtype=np.float64)
+            try:
+                encoded = vectorizer.fit_transform(values)
+            except ValueError as exc:
+                if not any(fragment in str(exc) for fragment in (
+                        'empty vocabulary', 'After pruning, no terms remain',
+                        'max_df corresponds to < documents than min_df')):
+                    raise
+                # No recurring words supply no learned lexical features.
+                continue
+            width += encoded.shape[1]
+            text_entries += encoded.nnz
+            if width > MAX_LINEAR_COLUMNS or text_entries > MAX_DENSE_CELLS:
+                raise ValueError('Linear feature expansion exceeds the sparse resource limit')
+            adapter.text_vectorizers[name] = vectorizer
+        return adapter
     if parameters.get('encoding') == 'onehot':
         width = len(x.columns) - len(categorical) + sum(map(len, vocabulary.values()))
         if len(x) * width > MAX_DENSE_CELLS:
@@ -311,8 +418,8 @@ def fit(family, x_train, y_train, x_valid, y_valid, categorical, request,
         deadline, threads, problem_type, metric):
     """Fit on one pinned fold; custom primary scoring never controls patience."""
     _check_deadline(deadline)
-    if family not in {'lightgbm', 'xgboost', 'extra_trees'}:
-        raise ValueError('family must be lightgbm, xgboost or extra_trees')
+    if family not in {'lightgbm', 'xgboost', 'extra_trees', 'linear'}:
+        raise ValueError('family must be lightgbm, xgboost, extra_trees or linear')
     if problem_type not in {'classification', 'regression'}:
         raise ValueError('Unknown problem type')
     if not isinstance(request, dict) or any(name not in x_train for name in categorical):
@@ -325,6 +432,18 @@ def fit(family, x_train, y_train, x_valid, y_valid, categorical, request,
             request[canonical] = request[alias]
     threads = _threads(threads)
     regression = problem_type == 'regression'
+    if family == 'linear':
+        weighting = request.get('auto_class_weights', 'SqrtBalanced' if metric.removeprefix('neg_') in {
+            'macro_f1', 'balanced_accuracy'} else 'None')
+        if weighting not in {'None', 'Balanced', 'SqrtBalanced'}:
+            raise ValueError('Invalid auto_class_weights')
+        native = (dict(alpha=1., solver='lsqr', tol=1e-6) if regression else
+                  dict(C=1., solver='lbfgs', max_iter=200, tol=1e-4, random_state=42))
+        parameters = dict(native=native, weighting=weighting, encoding='linear_sparse')
+        adapter = _adapter(family, x_train, y_train, categorical, parameters,
+                           problem_type, metric, threads)
+        adapter._train(x_train, y_train, x_valid, y_valid, 1, deadline)
+        return adapter
     if family == 'extra_trees':
         if regression:
             raise ValueError('extra_trees currently supports classification only')

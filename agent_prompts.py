@@ -25,8 +25,11 @@ search compares nearby depths only when its first training run is fast enough; i
 the best candidate on the same validation split. Read search_results before repeating a trial.
 Startup portfolio compares CatBoost, LightGBM and XGBoost within one compute budget,
 then considers a fixed ensemble and a bounded optional ExtraTrees classifier.
+It also evaluates a bounded sparse linear model (Ridge regression or logistic
+classification). Use model=linear for continuous trends or sparse text features;
+trees cannot extrapolate a continuous relationship beyond observed values.
 Read portfolio_results before repeating those trials.
-Use model=catboost/lightgbm/xgboost/extra_trees for an individual experiment. Ensemble takes
+Use model=catboost/lightgbm/xgboost/extra_trees/linear for an individual experiment. Ensemble takes
 manifest_paths (2 or 3 compatible native manifests) and optional positive weights.
 For regression, a cheap extra seed may enter a predefined bag; never promote a seed
 only because it won one validation slice. Preserve categorical preprocessing in saved models.
@@ -51,6 +54,10 @@ The orchestrator also attempts this once before publication if enough compute ti
 Inspect the selected validation strategy and its rationale. Preserve automatic time/group-aware
 validation across experiments; do not switch to a random split to inflate the reported score.
 Temporal distribution shift and duplicated entities can make random validation misleading.
+Strict ISO date columns with time evidence receive numeric trend/calendar features;
+future-only test dates use forward validation, including high-cardinality timestamps.
+Read the inferred metric carefully: primary declarations take precedence over examples
+and auxiliary metrics. Resolve conflicts with an explicit request.metric before training.
 Use run_backend to compare a few justified configurations, rather than regenerating standard
 training code. run_python is available for other task types, diagnosis and feature engineering.
 Do not invent validation results. Respect time_left and finalization phase.

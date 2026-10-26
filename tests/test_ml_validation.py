@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from ml_validation import plan_validation
+from ml_validation import plan_validation, time_values
 
 
 def problem(frame, test=None, labels=None, text=""):
@@ -13,6 +13,63 @@ def problem(frame, test=None, labels=None, text=""):
 
 
 class ValidationPlannerTests(unittest.TestCase):
+    def test_many_unsorted_iso_dates_use_complete_future_holdout(self):
+        dates = pd.date_range('2025-01-01', periods=200, tz='UTC')
+        order = np.random.default_rng(42).permutation(200)
+        frame = pd.DataFrame({'event_date': dates.strftime('%Y-%m-%d')[order],
+                              'x': np.arange(200)})
+        p = problem(frame, pd.DataFrame({'event_date': ['2025-08-01'], 'x': [999]}),
+                    text='event date; predict future observations')
+        plan = plan_validation(p)
+        self.assertEqual(plan['strategy'], 'time')
+        a = pd.to_datetime(frame.iloc[plan['train_indices']].event_date)
+        b = pd.to_datetime(frame.iloc[plan['valid_indices']].event_date)
+        self.assertLess(a.max(), b.min())
+        self.assertEqual(len(b), 40)
+
+    def test_more_than_one_hundred_numeric_timestamps_are_temporal(self):
+        p = problem(pd.DataFrame({'timestamp': np.arange(200)}),
+                    pd.DataFrame({'timestamp': [200, 201]}), text='timestamp of observation')
+        plan = plan_validation(p)
+        self.assertEqual(plan['strategy'], 'time')
+        np.testing.assert_array_equal(plan['valid_indices'], np.arange(160, 200))
+
+    def test_invalid_or_mixed_dates_are_not_guessed(self):
+        for bad in ('2025-02-30', 'not-a-date', '01/02/2025', None):
+            dates = pd.date_range('2025-01-01', periods=20).strftime('%Y-%m-%d').tolist()
+            dates[3] = bad
+            p = problem(pd.DataFrame({'event_date': dates, 'x': np.arange(20)}),
+                        pd.DataFrame({'event_date': ['2026-01-01'], 'x': [99]}), text='event date')
+            with self.subTest(bad=bad):
+                self.assertEqual(plan_validation(p)['strategy'], 'random')
+                self.assertIsNone(time_values(p['train'].event_date))
+
+    def test_explicit_iso_offsets_sort_by_instant_not_lexical_text(self):
+        dates = ['2025-01-01T00:00:00Z'] * 4 + ['2025-01-01T01:30:00+02:00'] * 4
+        dates += ['2025-01-01T00:30:00Z'] * 2
+        p = problem(pd.DataFrame({'event_date': dates}))
+        plan = plan_validation(p, {'split': 'time', 'time_column': 'event_date'})
+        np.testing.assert_array_equal(plan['valid_indices'], [8, 9])
+        parsed = time_values(p['train'].event_date)
+        self.assertLess(parsed.iloc[plan['train_indices']].max(),
+                        parsed.iloc[plan['valid_indices']].min())
+
+    def test_iso_time_split_preserves_future_new_class_safety(self):
+        dates = pd.date_range('2025-01-01', periods=200).strftime('%Y-%m-%d')
+        p = problem(pd.DataFrame({'event_date': dates}),
+                    pd.DataFrame({'event_date': ['2026-01-01']}),
+                    labels=[0] * 160 + [1] * 40, text='event date')
+        plan = plan_validation(p)
+        self.assertEqual(plan['strategy'], 'time')
+        self.assertIsNone(plan['train_indices'])
+
+    def test_time_diagnostics_are_bounded_for_many_unique_periods(self):
+        p = problem(pd.DataFrame({'timestamp': np.arange(1000)}),
+                    pd.DataFrame({'timestamp': [1001]}), text='timestamp of observation')
+        plan = plan_validation(p)
+        self.assertEqual(plan['diagnostics']['validation_period_count'], 200)
+        self.assertEqual(len(plan['diagnostics']['validation_periods']), 100)
+
     def test_target_cannot_define_time_or_group_folds(self):
         p = problem(pd.DataFrame({'x': range(20), 'target': range(20)}))
         p['target'] = 'target'

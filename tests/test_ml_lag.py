@@ -152,6 +152,16 @@ class LagPipelineTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaisesRegex(MLRequestError, 'configuration'):
                 refit_lag(self.envelope(), changed, time.monotonic(), 45, 1)
 
+    def test_calendar_features_survive_lag_loading_and_refit(self):
+        for filename in ('train.csv', 'test.csv'):
+            frame = pd.read_csv(self.root / filename)
+            frame['event_date'] = (pd.Timestamp('2020-01-01') + pd.to_timedelta(frame.period, unit='D')).astype(str)
+            frame.to_csv(self.root / filename, index=False)
+        original = self.lag()
+        final = self.refit(original)
+        self.assertTrue(final['final'])
+        self.assertEqual(final['score'], original['score'])
+
     def test_changed_inputs_and_nonhistory_base_are_rejected(self):
         history = self.history()
         lag = self.lag(history)

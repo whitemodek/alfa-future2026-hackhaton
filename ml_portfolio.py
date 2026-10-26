@@ -206,7 +206,7 @@ def _load_model(manifest, root, validation=False):
         from catboost import CatBoostClassifier, CatBoostRegressor
         model = CatBoostClassifier() if manifest['classes'] is not None else CatBoostRegressor()
         model.load_model(str(path))
-    elif manifest.get('model') in {'lightgbm', 'xgboost', 'extra_trees'}:
+    elif manifest.get('model') in {'lightgbm', 'xgboost', 'extra_trees', 'linear'}:
         from ml_models import ModelAdapter
         model = ModelAdapter.load_model(path)
     else:
@@ -269,13 +269,21 @@ def run_ensemble(envelope, started, budget, threads):
                                weight=float(weights[index]), manifest=manifest))
     # Always use the saved HOLDOUT models for scoring, even if test predictions
     # use full-data refits. Scoring full refits on these rows would leak labels.
+    validation_predictions, validation_probabilities = [], []
     for model, component, frame in zip(validation_models, components, validation_frames):
         _check_time(started, budget, 1)
         p, prob = _blend(problem, [model], [1.0], frame)
         actual = b._score(problem, problem['y'].iloc[valid_i], p, prob)
         if actual is None or not math.isclose(actual, component['manifest']['score'], rel_tol=1e-10, abs_tol=1e-10):
             raise b.MLRequestError('Component does not reproduce its saved holdout score.')
-    prediction, probability = _blend(problem, validation_models, weights, validation_frames)
+        validation_predictions.append(p)
+        validation_probabilities.append(prob)
+    if problem['classes'] is not None:
+        probability = sum(w * p for w, p in zip(weights, validation_probabilities))
+        prediction = np.argmax(probability, axis=1)
+    else:
+        probability = None
+        prediction = sum(w * p for w, p in zip(weights, validation_predictions))
     score = b._score(problem, problem['y'].iloc[valid_i], prediction, probability)
     _check_time(started, budget, 1)
     test_prediction, test_probability = _blend(problem, models, weights, test_frames)
@@ -373,13 +381,13 @@ def run_portfolio(envelope, started, budget, threads):
     request = envelope['request']
     if not isinstance(request.get('seed_bagging', True), bool):
         raise b.MLRequestError('seed_bagging must be a boolean.')
-    for key in ('entity_history', 'entity_lag', 'extra_trees'):
+    for key in ('entity_history', 'entity_lag', 'extra_trees', 'linear'):
         if not isinstance(request.get(key, True), bool):
             raise b.MLRequestError(key + ' must be a boolean.')
     families = request.get('families', ['catboost', 'lightgbm', 'xgboost'])
     if (not isinstance(families, list) or not families or len(families) > 4
             or len(set(families)) != len(families)
-            or any(f not in {'catboost', 'lightgbm', 'xgboost', 'extra_trees'} for f in families)):
+            or any(f not in {'catboost', 'lightgbm', 'xgboost', 'extra_trees', 'linear'} for f in families)):
         raise b.MLRequestError('families must list distinct supported native models.')
     best, candidates, trials = {}, [], []
     for index, family in enumerate(families):
@@ -490,6 +498,23 @@ def run_portfolio(envelope, started, budget, threads):
                 trials.append(dict(model=label, accepted=False, error=type(exc).__name__))
             finally:
                 pair_seconds = max(pair_seconds, time.monotonic() - ensemble_started)
+    # A different inductive bias: trees cannot extrapolate a continuous trend.
+    # Run after the established tree portfolio, preserving its checkpoint and
+    # forest allowance. The existing worker enforces the hard process deadline.
+    if request.get('linear', True) and 'families' not in request:
+        left = budget - (time.monotonic() - started)
+        allowance = min(20.0, left - 30.0)
+        if allowance >= 5:
+            try:
+                params = dict(request, action='experiment', model='linear', refit=False)
+                result = b.run(dict(envelope, request=params, time_budget_seconds=allowance))
+                accepted = bool(improves(result, best))
+                trials.append(dict(model='linear', score=result.get('score'), accepted=accepted))
+                if accepted:
+                    best = result
+                    checkpoint(envelope, best)
+            except Exception as exc:
+                trials.append(dict(model='linear', accepted=False, error=type(exc).__name__))
     if request.get('entity_history', True) and finite_score(best) and best.get('model') != 'dummy':
         try:
             from ml_history import entity_columns, run_history

@@ -129,7 +129,7 @@ def _base_predictions(envelope, manifest, started, budget):
         if (any(not math.isfinite(w) or w <= 0 for w, _ in loaded)
                 or not math.isclose(sum(w for w, _ in loaded), 1.0)):
             raise b.MLRequestError('Invalid history base ensemble weights.')
-    elif manifest.get('model') in {'catboost', 'lightgbm', 'xgboost'}:
+    elif manifest.get('model') in {'catboost', 'lightgbm', 'xgboost', 'linear'}:
         loaded = [(1.0, manifest)]
     else:
         raise b.MLRequestError('History requires an independent native model or ensemble.')

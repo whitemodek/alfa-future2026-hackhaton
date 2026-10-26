@@ -47,6 +47,14 @@ class HistoryTests(unittest.TestCase):
         return run(self.envelope(action='experiment', model=family, refit=full,
                                  iterations=15, depth=3, split='time', time_column='period'))
 
+    def test_linear_base_history_can_be_scored_and_fully_refit(self):
+        base = self.base('linear')
+        history = run(self.envelope(action='history', manifest_path=base['manifest_path']))
+        final = run(self.envelope(action='refit', manifest_path=history['manifest_path']))
+        self.assertTrue(final['final'])
+        self.assertEqual(final['score'], history['score'])
+        self.assertEqual(final['validation_id'], base['validation_id'])
+
     def test_strict_past_missing_and_ambiguous_keys_preserve_base(self):
         train = pd.DataFrame({'entity': ['a', 'a', 'b', 'b', None],
                               'period': [1, 3, 1, 1, 1]})
