@@ -151,6 +151,7 @@ python pack_solution.py dist/solution.zip
 - [Независимые проверки на 12 дополнительных задачах](docs/TRANSFER_BENCHMARK.md)
 - [Исследование дисбаланса и новых методов](docs/RARE_CLASS_STUDY.md)
 - [Расширение покрытия задач и парные проверки](docs/GENERALIZATION_UPGRADE.md)
+- [Специалист по атакам и причинная статистика](docs/CAUSAL_SPECIALIST_STUDY.md)
 - [Формат отправки](docs/SUBMISSION.md)
 - [Границы безопасности](docs/SECURITY.md)
 - [Пояснение для команды и защиты, TXT](docs/PROJECT_EXPLANATION_RU.txt)
