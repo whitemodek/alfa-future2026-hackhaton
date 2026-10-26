@@ -1,0 +1,348 @@
+{
+  "date": "2026-10-26",
+  "protocol": "Paired offline native pipelines,90s warmup,2threads; primary splits previously used, synthetic generators seed20261026; external labels excluded from workers",
+  "external_api_requests": 0,
+  "cases": [
+    {
+      "name": "linear_numeric",
+      "runs": [
+        {
+          "release": "old",
+          "success": true,
+          "minutes": 0.76,
+          "zip_sha256": "8b56a1a92e63d430a0a38b27b773b0ac6d1a2d7b935002de4d4eb8a4f0ea4a14",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 39.46442554644185
+            }
+          }
+        },
+        {
+          "release": "new",
+          "success": true,
+          "minutes": 0.47,
+          "zip_sha256": "6d1c7c6ea93b2542a64d0ae01c3503c936bc97a15b7f86b0c9efe642166e813b",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 6.926047229722968
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "linear_mixed",
+      "runs": [
+        {
+          "release": "old",
+          "success": true,
+          "minutes": 0.89,
+          "zip_sha256": "8b56a1a92e63d430a0a38b27b773b0ac6d1a2d7b935002de4d4eb8a4f0ea4a14",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 57.24960063521794
+            }
+          }
+        },
+        {
+          "release": "new",
+          "success": true,
+          "minutes": 0.52,
+          "zip_sha256": "6d1c7c6ea93b2542a64d0ae01c3503c936bc97a15b7f86b0c9efe642166e813b",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 20.916379834272245
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "nonlinear",
+      "runs": [
+        {
+          "release": "old",
+          "success": true,
+          "minutes": 0.33,
+          "zip_sha256": "8b56a1a92e63d430a0a38b27b773b0ac6d1a2d7b935002de4d4eb8a4f0ea4a14",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 1.3414458891058931
+            }
+          }
+        },
+        {
+          "release": "new",
+          "success": true,
+          "minutes": 0.32,
+          "zip_sha256": "6d1c7c6ea93b2542a64d0ae01c3503c936bc97a15b7f86b0c9efe642166e813b",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 1.3414458891058931
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "imbalanced",
+      "runs": [
+        {
+          "release": "old",
+          "success": true,
+          "minutes": 0.27,
+          "zip_sha256": "8b56a1a92e63d430a0a38b27b773b0ac6d1a2d7b935002de4d4eb8a4f0ea4a14",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "roc_auc": 0.9421805706635428,
+              "warning": null
+            }
+          }
+        },
+        {
+          "release": "new",
+          "success": true,
+          "minutes": 0.27,
+          "zip_sha256": "6d1c7c6ea93b2542a64d0ae01c3503c936bc97a15b7f86b0c9efe642166e813b",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "roc_auc": 0.9421805706635428,
+              "warning": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "energy_efficiency",
+      "runs": [
+        {
+          "release": "old",
+          "success": true,
+          "minutes": 0.21,
+          "zip_sha256": "8b56a1a92e63d430a0a38b27b773b0ac6d1a2d7b935002de4d4eb8a4f0ea4a14",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 0.34869806746940485
+            }
+          }
+        },
+        {
+          "release": "new",
+          "success": true,
+          "minutes": 0.23,
+          "zip_sha256": "3e178e0749da73e4af4460c05a46af8ad5d79f8d76e257be48ab3a69da5158b4",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 0.34869806746940485
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "diabetes",
+      "runs": [
+        {
+          "release": "old",
+          "success": true,
+          "minutes": 0.18,
+          "zip_sha256": "8b56a1a92e63d430a0a38b27b773b0ac6d1a2d7b935002de4d4eb8a4f0ea4a14",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 54.61652798994445
+            }
+          }
+        },
+        {
+          "release": "new",
+          "success": true,
+          "minutes": 0.19,
+          "zip_sha256": "3e178e0749da73e4af4460c05a46af8ad5d79f8d76e257be48ab3a69da5158b4",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 52.161994002460496
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "wine_quality_white",
+      "runs": [
+        {
+          "release": "old",
+          "success": true,
+          "minutes": 0.29,
+          "zip_sha256": "8b56a1a92e63d430a0a38b27b773b0ac6d1a2d7b935002de4d4eb8a4f0ea4a14",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "macro_f1": 0.29187359797715423
+            }
+          }
+        },
+        {
+          "release": "new",
+          "success": true,
+          "minutes": 0.31,
+          "zip_sha256": "3e178e0749da73e4af4460c05a46af8ad5d79f8d76e257be48ab3a69da5158b4",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "macro_f1": 0.29187359797715423
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "bank_marketing_no_duration",
+      "runs": [
+        {
+          "release": "old",
+          "success": true,
+          "minutes": 0.61,
+          "zip_sha256": "8b56a1a92e63d430a0a38b27b773b0ac6d1a2d7b935002de4d4eb8a4f0ea4a14",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "roc_auc": 0.7988219982196003,
+              "warning": null
+            }
+          }
+        },
+        {
+          "release": "new",
+          "success": true,
+          "minutes": 0.57,
+          "zip_sha256": "3e178e0749da73e4af4460c05a46af8ad5d79f8d76e257be48ab3a69da5158b4",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "roc_auc": 0.7988219982196003,
+              "warning": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "reg_future_dates",
+      "runs": [
+        {
+          "release": "old",
+          "success": true,
+          "minutes": 0.12,
+          "zip_sha256": "8b56a1a92e63d430a0a38b27b773b0ac6d1a2d7b935002de4d4eb8a4f0ea4a14",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 454.22530118363676
+            }
+          }
+        },
+        {
+          "release": "new",
+          "success": true,
+          "minutes": 0.33,
+          "zip_sha256": "aa2553b611f735b4d1c15793d27ba9241c7ea048d48c472d00f7118dee83fb1e",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "rmse": 2.2310470823736477
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "text_phrasing",
+      "runs": [
+        {
+          "release": "old",
+          "success": true,
+          "minutes": 0.19,
+          "zip_sha256": "8b56a1a92e63d430a0a38b27b773b0ac6d1a2d7b935002de4d4eb8a4f0ea4a14",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "macro_f1": 0.33471933471933474
+            }
+          }
+        },
+        {
+          "release": "new",
+          "success": true,
+          "minutes": 0.22,
+          "zip_sha256": "aa2553b611f735b4d1c15793d27ba9241c7ea048d48c472d00f7118dee83fb1e",
+          "check": {
+            "format_ok": true,
+            "problems": [],
+            "metric": {
+              "macro_f1": 0.9281242980888484
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "final_release_verification": {
+    "files": 13,
+    "bytes": 65288,
+    "sha256": "aa2553b611f735b4d1c15793d27ba9241c7ea048d48c472d00f7118dee83fb1e",
+    "complete_manifests": 10,
+    "tasks": [
+      {
+        "task": "regression",
+        "score": 37.165877941764165,
+        "minutes": 2.06,
+        "rows": 22449
+      },
+      {
+        "task": "multiclass",
+        "score": 0.6562101454491613,
+        "minutes": 4.7,
+        "rows": 41166
+      }
+    ],
+    "original_inputs_intact": true,
+    "secret_scan_passed": true
+  },
+  "linux_ci": {
+    "run_id": 40281141009,
+    "tests": 295,
+    "result": "success"
+  }
+}

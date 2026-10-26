@@ -76,6 +76,21 @@ holdout и пробуют полный refit. При нехватке време
 `metric`, `direction`, `positive_class`, `class_order`, `categorical_features`.
 Настройки модели: `iterations`, `depth`, `learning_rate`, `random_seed`,
 `auto_class_weights`, `early_stopping_rounds`, `l2_leaf_reg` (alias `reg_lambda`).
+
+`model: linear` обучает Ridge(alpha=1, lsqr) для регрессии или
+LogisticRegression(C=1, максимум 200 итераций) для классификации. Train-only
+медиана, индикаторы пропусков, StandardScaler и разреженный OHE сохраняются
+вместе с моделью. Текстовые колонки могут получать TF-IDF слов и биграмм;
+эвристика и ограничения описаны в GENERALIZATION_UPGRADE.md.
+Линейный fit считается одной законченной итерацией: `selected_iterations=1`,
+а не одним деревом. `refit` повторяет сохранённые параметры на полном train.
+Он поддерживает тот же формат вероятностей и ансамблей. Портфель рассматривает
+его после деревьев при наличии времени; `linear: false` отключает эту попытку.
+
+При автоматическом разборе явная основная метрика приоритетнее вспомогательных
+упоминаний. Конфликт основных метрик требует явного `metric`. ISO-даты временных
+признаков получают числовое время и календарь; передача столбца в
+`categorical_features` сохраняет категориальное представление.
 LightGBM: `num_leaves`, `min_child_samples`, `depth=-1` для leaf-wise роста.
 XGBoost: `min_child_weight`, `encoding` (`native`/`onehot`). Регрессия по умолчанию
 использует плотный One-Hot с ограничением расширения до 50 млн ячеек; числовые
